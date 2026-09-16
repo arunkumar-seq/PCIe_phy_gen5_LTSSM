@@ -82,7 +82,20 @@ parameter GEN5_PIPEWIDTH = 8
 	 );
 //internal reg
 reg [7:0] count;
-reg [MAXPIPEWIDTH/8*LANESNUMBER-1:0]DK;
+// BUGFIX-003 (InsertBlockToken_G3.v) / BUGFIX-004 (Insert_token_block.v):
+// Root cause: DK was declared [MAXPIPEWIDTH/8*LANESNUMBER-1:0] (64 bits for the
+// default 32x16 configuration), but every shift/insert macro in this file
+// (`en, `co and the hand-unrolled index-0/78 variants) treats DK as an 80-bit
+// vector - exactly like its sibling pipeline registers STB_reg/SDB_reg/
+// END_reg/valid_reg which are declared [64+16-1:0] (64 input bytes + 16 bytes
+// of insertion headroom) and data_reg [512+16*8-1:0]. The narrower declaration
+// made selects such as DK[78:0] out-of-range elaboration errors and would
+// silently truncate the token-bit pipeline in synthesis.
+// Fix: declare DK with the same [64+16-1:0] width as its sibling registers.
+// The output interface is unaffected: DKOut is still produced from the
+// explicit DK[MAXPIPEWIDTH/8*LANESNUMBER-1:0] part-selects below.
+// Verified by: slang elaboration (range-oob errors gone) + yosys hierarchy/proc check.
+reg [64+16-1:0]DK;
 
 wire[MAXPIPEWIDTH/8*LANESNUMBER-1:0]flag1;
 reg [3 :0] flag2; 

@@ -10,8 +10,15 @@ module LFSR_16_gen3(seedValue, scrambler_reset, reset_n, pclk, data_out);
 
   always @(*) begin
 
-    if(scrambler_reset)
-       lfsr_q <= seedValue;
+  // BUGFIX-006: the pattern-reseed 'if(scrambler_reset) lfsr_q <= ...'
+  // that used to sit inside this combinational block drove lfsr_q from a
+  // SECOND always block (multiple-driver error) and, being event-driven,
+  // reseeded the LFSR asynchronously mid-simulation. Root cause: reseeding
+  // a clocked register from combinational logic. Fix: removed here; the
+  // reseed is now synchronous in the clocked block below
+  // ('else if(scrambler_reset) lfsr_q <= seedValue;'), costing one
+  // extra clock before the first post-reset pattern symbol appears.
+  // Verified by: yosys proc/check (no multi-driver) + LFSR period check.
 
     lfsr_c[0] =  lfsr_q[7] ^   lfsr_q[9] ^ lfsr_q[11] ^ lfsr_q[13] ^ lfsr_q[14] ^ lfsr_q[15] ^ lfsr_q[17] ^ lfsr_q[18] ^ lfsr_q[19];
     lfsr_c[1] =  lfsr_q[8] ^  lfsr_q[10] ^ lfsr_q[12] ^ lfsr_q[14] ^ lfsr_q[15] ^ lfsr_q[16] ^ lfsr_q[18] ^ lfsr_q[19] ^ lfsr_q[20];
@@ -59,6 +66,8 @@ module LFSR_16_gen3(seedValue, scrambler_reset, reset_n, pclk, data_out);
 
     if(~reset_n) 
       lfsr_q <= seedValue; 
+        else if(scrambler_reset)
+      lfsr_q <= seedValue; // BUGFIX-006: synchronous reseed
     else
       lfsr_q <= lfsr_c ;
 

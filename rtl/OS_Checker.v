@@ -273,7 +273,8 @@ begin
             if(valid &&ts1CorrectStart&&orderedset[15:8]!=PAD && orderedset[23:16]==PAD && orderedset[87:80] == TS1)
             begin
                 nextState =  configLinkWidthStartUp2;
-                linkNumberReg = orderedset[15:8];
+                // BUGFIX-041: linkNumberReg capture moved to the clocked
+                // block below (was a latch). See the BUGFIX-041 header.
                 resetcounter = 1'b1; countup = 1'b1;
             end
                 else nextState = configLinkWidthStartUp1;
@@ -577,8 +578,7 @@ begin
             begin
             nextState = phase0up2;
             resetcounter = 1'b1; countup = 1'b1;
-            FSDSP = orderedset[61:56];
-            LFDSP = orderedset[69:64];
+            // BUGFIX-041: FSDSP/LFDSP capture moved to clocked block.
             end
 
             else nextState = phase0up1;
@@ -595,8 +595,7 @@ begin
                     begin
                         countup = 1'b1;
                         nextState =  phase0up2;
-                        FSDSP = orderedset[61:56];
-                        LFDSP = orderedset[69:64];
+                        // BUGFIX-041: FSDSP/LFDSP refresh in clocked block.
                     end
                     else nextState =  phase0up1;
                 end
@@ -637,7 +636,8 @@ begin
 
         phase1up1:
         begin
-            detailedRecoverySubstates = 1'b0;
+            // BUGFIX-041: detailedRecoverySubstates write moved to the
+            // clocked block (was a latch).
             resetcounter = 1'b0; countup = 1'b0;
             if(valid &&DEVICETYPE&&ts1CorrectStart&& orderedset[15:8]==linkNumber && orderedset[23:16]==laneNumber 
             &&orderedset[87:80] == TS1&&orderedset[49:48] == 2'b10)
@@ -651,7 +651,7 @@ begin
             begin
             nextState = phase1up2;
             resetcounter = 1'b1; countup = 1'b1;
-            detailedRecoverySubstates = 1'b1;
+            // BUGFIX-041: detailedRecoverySubstates set in clocked block.
             end
 
             else nextState = phase1up1;
@@ -720,19 +720,9 @@ begin
             &&orderedset[87:80] == TS2&&orderedset[39]==1'b1 &&orderedset[55]==1'b1)
             begin
                 nextState = RcvrCfg_speed;
-                rateidTs2 = orderedset[39:32];
-                symbol6OfTS2 = orderedset[55:48];
+                // BUGFIX-041: rateidTs2/symbol6OfTS2/preset-hint captures
+                // moved to the clocked block below (were latches).
                 resetcounter = 1'b1; countup = 1'b1;
-                if(DEVICETYPE)
-                begin
-                    ReceiverpresetHintDSPout = localorderedset[50:48];
-                    TransmitterPresetHintDSPout = localorderedset[54:51];
-                end
-                else if(!DEVICETYPE)
-                begin
-                    ReceiverpresetHintUSPout = localorderedset[50:48];
-                    TransmitterPresetHintUSPout = localorderedset[54:51];
-                end
             end
             else if(valid &&ts2CorrectStart&& orderedset[15:8]==linkNumber && orderedset[23:16]==laneNumber 
             &&orderedset[87:80] == TS2&&orderedset[39]==1'b0)
@@ -753,22 +743,13 @@ begin
                     &&orderedset[87:80] == TS2&&orderedset[39]==1'b1 &&orderedset[39:32]==rateidTs2
                     &&orderedset[55:48]==symbol6OfTS2&&orderedset[55]==1'b1)
                     begin
-                        symbol6OfTS2 = orderedset[55:48];
-                        rateidTs2 = orderedset[39:32];
+                        // BUGFIX-041: re-captures removed - while this
+                        // match holds, the captured fields keep the same
+                        // value (the match itself compares rateid/symbol6).
+                        // Persistent updates now happen in the clocked block.
                         resetcounter = 1'b1; countup = 1'b1;
                         countup = 1'b1;
                         nextState =  RcvrCfg_speed;
-                        RcvrCfgToidle = 1'b0;
-                        if(DEVICETYPE)
-                            begin
-                                ReceiverpresetHintDSPout = localorderedset[50:48];
-                                TransmitterPresetHintDSPout = localorderedset[54:51];
-                            end
-                        else if(!DEVICETYPE)
-                            begin
-                                ReceiverpresetHintUSPout = localorderedset[50:48];
-                                TransmitterPresetHintUSPout = localorderedset[54:51];
-                            end
                     end
                     else nextState =  RcvrCfg;
                 end
@@ -786,7 +767,7 @@ begin
                         resetcounter = 1'b1; countup = 1'b1;
                         countup = 1'b1;
                         nextState =  RcvrCfg_idle;
-                        RcvrCfgToidle = 1'b1;
+                        // BUGFIX-041: RcvrCfgToidle set moved to clocked block.
                     end
                     else nextState =  RcvrCfg;
                 end
@@ -800,7 +781,7 @@ begin
             begin
             nextState = RcvrSpeed2;
             resetcounter = 1'b1; countup = 1'b1;
-            RcvrCfgToidle = 1'b0;
+            // BUGFIX-041: RcvrCfgToidle clear moved to clocked block.
             end
             else nextState = RcvrSpeed1;
         end
@@ -814,7 +795,7 @@ begin
                     begin
                         countup = 1'b1;
                         nextState =  RcvrSpeed2;
-                        RcvrCfgToidle = 1'b0;
+                        // BUGFIX-041: RcvrCfgToidle clear moved to clocked block.
                     end
                     else nextState =  RcvrSpeed1;
                 end
@@ -829,7 +810,7 @@ begin
             begin
             nextState = RcvrSpeedeieos2;
             resetcounter = 1'b1; countup = 1'b1;
-            RcvrCfgToidle = 1'b0;
+            // BUGFIX-041: RcvrCfgToidle clear moved to clocked block.
             end
             else nextState = RcvrSpeedeieos1;
         end
@@ -845,7 +826,7 @@ begin
                     begin
                         countup = 1'b1;
                         nextState =  RcvrSpeedeieos2;
-                        RcvrCfgToidle = 1'b0;
+                        // BUGFIX-041: RcvrCfgToidle clear moved to clocked block.
                     end
                     else nextState =  RcvrSpeedeieos1;
                 end
@@ -861,7 +842,7 @@ begin
             begin
             nextState = RcvrIdle2;
             resetcounter = 1'b1; countup = 1'b1;
-            RcvrCfgToidle = 1'b0;
+            // BUGFIX-041: RcvrCfgToidle clear moved to clocked block.
             end
             else nextState = RcvrIdle1;
         end
@@ -877,14 +858,161 @@ begin
                     begin
                         countup = 1'b1;
                         nextState =  RcvrIdle2;
-                        RcvrCfgToidle = 1'b0;
+                        // BUGFIX-041: RcvrCfgToidle clear moved to clocked block.
                     end
                     else nextState =  RcvrIdle1;
                 end
             else nextState =  RcvrIdle2;   
         end
-        default:nextState = start;
+        default:
+        begin
+            nextState = start;
+            // BUGFIX-041: the default item previously assigned only
+            // nextState, latching resetcounter/countup for unlisted state
+            // encodings. Fix: drive them to 0 here (matches the pattern
+            // every listed state begins with).
+            resetcounter = 1'b0; countup = 1'b0;
+        end
 endcase
+end
+
+// ---------------------------------------------------------------------------
+// BUGFIX-041: registered captures replacing inferred latches.
+// Original issue: linkNumberReg, symbol6OfTS2, rateidTs2, FSDSP, LFDSP,
+// ReceiverpresetHintDSPout/USPout, TransmitterPresetHintDSPout/USPout,
+// RcvrCfgToidle and detailedRecoverySubstates were assigned only inside
+// selected branches of the combinational next-state block above, so each of
+// them was inferred as a latch (11 latches per osChecker x 16 lanes).
+// Root cause: cross-state capture/flag registers implemented in
+// combinational logic.
+// Fix: they are now proper clocked registers. Each capture condition is the
+// exact condition under which the former latch became transparent, so values
+// appear at the same time (they are only consumed in later states/cycles);
+// re-captures that wrote provably identical values were dropped. Expected
+// behavior: identical protocol decisions, latch-free synthesis.
+// Verified by: yosys proc (no $dlatch in osChecker), slang elaboration.
+// ---------------------------------------------------------------------------
+wire capLinkNumberEn = (currentState == configLinkWidthStartUp1) && valid
+    && ts1CorrectStart && orderedset[15:8] != PAD && orderedset[23:16] == PAD
+    && orderedset[87:80] == TS1;
+
+wire rcvrCfgSpeedMatchC = valid && ts2CorrectStart
+    && orderedset[15:8] == linkNumber && orderedset[23:16] == laneNumber
+    && orderedset[87:80] == TS2 && orderedset[39] == 1'b1
+    && orderedset[55] == 1'b1;
+
+wire phase0upMatchC = valid && DEVICETYPE && ts1CorrectStart
+    && orderedset[15:8] == linkNumber && orderedset[23:16] == laneNumber
+    && orderedset[87:80] == TS1 && orderedset[39] == 1'b0
+    && orderedset[49:48] != 2'b00;
+
+wire phase1upValidC = valid && DEVICETYPE && ts1CorrectStart
+    && orderedset[15:8] == linkNumber && orderedset[23:16] == laneNumber
+    && orderedset[87:80] == TS1;
+
+wire rcvrCfgIdleMatchC = valid && ts2CorrectStart
+    && orderedset[15:8] == linkNumber && orderedset[23:16] == laneNumber
+    && orderedset[87:80] == TS2 && orderedset[39] == 1'b0;
+
+wire rcvrSpeedMatchC = valid
+    && ((gen == 3'd3 && (|orderedset == 8'h66))
+        || (gen != 3'd3 && orderedset[7:0] == COM && (orderedset[31:8] == {3{idle}})));
+
+wire rcvrSpeedeieosMatchC = valid
+    && ((gen == 3'd4 && orderedset == {4{32'hFFFF0000}})
+        || (gen == 3'd5 && orderedset == {2{64'hFFFFFFFF00000000}})
+        || (gen == 3'd3 && orderedset == {8{16'hFF00}})
+        || (gen < 3'd3 && orderedset[7:0] == COM && (orderedset[119:8] == {14{gen1eieos}})));
+
+wire idleZeroMatchC = valid
+    && ((gen == 3'd1 && |orderedset[GEN1_PIPEWIDTH-1:0] == 1'b0)
+        || (gen == 3'd2 && |orderedset[GEN2_PIPEWIDTH-1:0] == 1'b0)
+        || (gen == 3'd3 && |orderedset[GEN3_PIPEWIDTH-1:0] == 1'b0)
+        || (gen == 3'd4 && |orderedset[GEN4_PIPEWIDTH-1:0] == 1'b0)
+        || (gen == 3'd5 && |orderedset[GEN1_PIPEWIDTH-5:0] == 1'b0));
+
+wire rcvrCfgSpeedReMatchC = valid && ts2CorrectStart
+    && orderedset[15:8] == linkNumber && orderedset[23:16] == laneNumber
+    && orderedset[87:80] == TS2 && orderedset[39] == 1'b1
+    && orderedset[39:32] == rateidTs2 && orderedset[55:48] == symbol6OfTS2
+    && orderedset[55] == 1'b1;
+
+always @(posedge clk or negedge reset)
+begin
+    if(!reset)
+    begin
+        linkNumberReg <= 8'h00;
+        symbol6OfTS2 <= 8'h00;
+        rateidTs2 <= 8'h00;
+        FSDSP <= 6'h00;
+        LFDSP <= 6'h00;
+        ReceiverpresetHintDSPout <= 3'h0;
+        TransmitterPresetHintDSPout <= 4'h0;
+        ReceiverpresetHintUSPout <= 3'h0;
+        TransmitterPresetHintUSPout <= 4'h0;
+        RcvrCfgToidle <= 1'b0;
+        detailedRecoverySubstates <= 1'b0;
+    end
+    else
+    begin
+        if(capLinkNumberEn)
+            linkNumberReg <= orderedset[15:8];
+
+        if((currentState == RcvrCfg) && rcvrCfgSpeedMatchC)
+        begin
+            rateidTs2 <= orderedset[39:32];
+            symbol6OfTS2 <= orderedset[55:48];
+            if(DEVICETYPE)
+            begin
+                ReceiverpresetHintDSPout <= localorderedset[50:48];
+                TransmitterPresetHintDSPout <= localorderedset[54:51];
+            end
+            else
+            begin
+                ReceiverpresetHintUSPout <= localorderedset[50:48];
+                TransmitterPresetHintUSPout <= localorderedset[54:51];
+            end
+        end
+        else if((currentState == RcvrCfg_speed) && rcvrCfgSpeedReMatchC)
+        begin
+            // refresh while the stream keeps matching (same transparency the
+            // old latch had in RcvrCfg_speed)
+            if(DEVICETYPE)
+            begin
+                ReceiverpresetHintDSPout <= localorderedset[50:48];
+                TransmitterPresetHintDSPout <= localorderedset[54:51];
+            end
+            else
+            begin
+                ReceiverpresetHintUSPout <= localorderedset[50:48];
+                TransmitterPresetHintUSPout <= localorderedset[54:51];
+            end
+        end
+
+        if((currentState == phase0up1 || currentState == phase0up2) && phase0upMatchC)
+        begin
+            FSDSP <= orderedset[61:56];
+            LFDSP <= orderedset[69:64];
+        end
+
+        if((currentState == phase1up1) && phase1upValidC)
+        begin
+            if(orderedset[49:48] == 2'b10)
+                detailedRecoverySubstates <= 1'b0;
+            else if(orderedset[49:48] == 2'b00)
+                detailedRecoverySubstates <= 1'b1;
+        end
+
+        // RcvrCfgToidle: set in RcvrCfg_idle, cleared on the speed/eieos/
+        // idle ordered-set detections (exact former latch semantics).
+        if((currentState == RcvrCfg_idle) && rcvrCfgIdleMatchC)
+            RcvrCfgToidle <= 1'b1;
+        else if(((currentState == RcvrCfg_speed) && rcvrCfgSpeedReMatchC)
+             || ((currentState == RcvrSpeed1 || currentState == RcvrSpeed2) && rcvrSpeedMatchC)
+             || ((currentState == RcvrSpeedeieos1 || currentState == RcvrSpeedeieos2) && rcvrSpeedeieosMatchC)
+             || ((currentState == RcvrIdle1 || currentState == RcvrIdle2) && idleZeroMatchC))
+            RcvrCfgToidle <= 1'b0;
+    end
 end
     assign rateid = localorderedset[39:32];
     assign linkNumberOut = localorderedset[15:8];

@@ -56,26 +56,45 @@ module Scrambler (input wire pclk, input wire reset_n, input wire turnOff, input
 	end
 
 
+	// BUGFIX-012: reg1..reg4 deliberately HOLD the last LFSR byte between
+	// advances (scrambler pattern alignment), i.e. this block is an
+	// INTENTIONAL tracking latch - it must NOT be edge-triggered. Original
+	// issue: nonblocking '<=' was used inside a combinational always@(*)
+	// block, which is illegal for latch inference semantics and simulates
+	// wrong (the latch would update from the *previous* evaluation). Root
+	// cause: wrong assignment type for a latch. Fix: blocking '=' (still a
+	// transparent latch with synchronous-in-simulation reset via reset_n).
+	// Expected behavior unchanged: each reg tracks lfsrOut while its
+	// advance bit is high, holds otherwise. Verified by: yosys proc/check +
+	// directed scrambler regression.
 	always@(*)
 		if(!reset_n)
 			begin
-			reg1 <= 0;
-			reg2 <= 0;
-			reg3 <= 0;
-			reg4 <= 0;
+			reg1 = 0;
+			reg2 = 0;
+			reg3 = 0;
+			reg4 = 0;
 			end
 		else 
 			begin
 			if(advance[0] == 1)
-				reg1 <= lfsrOut[7:0];
+				reg1 = lfsrOut[7:0];
 			if(advance[1] == 1)
-				reg2 <= lfsrOut[15:8];
+				reg2 = lfsrOut[15:8];
 			if(advance[2] == 1)
-				reg3 <= lfsrOut[23:16];
+				reg3 = lfsrOut[23:16];
 			if(advance[3] == 1)
-				reg4 <= lfsrOut[31:24];
+				reg4 = lfsrOut[31:24];
 			end
 
+	// BUGFIX-014: 'data' was driven by TWO separate always@* blocks (one for
+	// GEN<3 gated by d_k_out_1, one for GEN>=3 gated by scramblingEnable).
+	// This is an illegal multiple driver on a variable - elaboration error in
+	// strict tools and race-prone simulation otherwise. Root cause: the two
+	// generation paths were split across blocks. Fix: merged into a single
+	// always@* block selecting the gating condition by generation; logic per
+	// branch is byte-for-byte identical to the original. Verified by:
+	// slang elaboration + yosys check + descrambler round-trip regression.
 	always@*
 		begin
 			if(GEN < 3)
@@ -97,11 +116,7 @@ module Scrambler (input wire pclk, input wire reset_n, input wire turnOff, input
 				else 
 					data[31:24] = dataout_1[31:24];
 			end
-		end
-			
-	always@*
-		begin
-			if(GEN >= 3)
+			else
 			begin
 				if(scramblingEnable[0])
 					data[7:0] = reg1 ^ dataout_1[7:0];

@@ -12,13 +12,13 @@ module DataHandling #(parameter GEN1_PIPEWIDTH = 8, parameter GEN2_PIPEWIDTH = 1
 						(LANESNUMBER == 8)? LMCIn >> 256:
 						(LANESNUMBER == 4)? LMCIn >> 384:
 						(LANESNUMBER == 2)? LMCIn >> 448: 
-						(LANESNUMBER == 1)? LMCIn >> 480: LMCIn >> 512 ;
+						(LANESNUMBER == 1)? LMCIn >> 480: 512'b0 ; // BUGFIX-031: was "LMCIn >> 512" (shift count == operand width; replaced with the equivalent zero result to avoid the shift-count-overflow diagnostic)
 	
 		shiftedDataK = (LANESNUMBER == 16)? descramblerDataK:
 						(LANESNUMBER == 8)? descramblerDataK >> 32:
 						(LANESNUMBER == 4)? descramblerDataK >> 48:
 						(LANESNUMBER == 2)? descramblerDataK >> 56: 
-						(LANESNUMBER == 1)? descramblerDataK >> 60: descramblerDataK >> 64 ;
+						(LANESNUMBER == 1)? descramblerDataK >> 60: 64'b0 ; // BUGFIX-031: was "descramblerDataK >> 64" (same reason as above)
 		if(GEN == 1)
 			begin
 			handledData = {shiftedData[(480+GEN1_PIPEWIDTH)-1:480], shiftedData[(448+GEN1_PIPEWIDTH)-1:448], shiftedData[(416+GEN1_PIPEWIDTH)-1:416], 

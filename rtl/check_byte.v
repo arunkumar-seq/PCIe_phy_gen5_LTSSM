@@ -4,7 +4,7 @@ module check_byte(
     input   valid,
     input   DK,
 
-    output  [5:0]type,
+    output  [5:0]packet_type, // BUGFIX-002: renamed from "type" (SystemVerilog reserved keyword)
     output  [1:0]tlp_or_dllp_out
 );
 // data boundries
@@ -82,7 +82,7 @@ module check_byte(
         end
     end
 
-assign type = type_reg;
+assign packet_type = type_reg; // BUGFIX-002: renamed port "type" -> "packet_type" (SV reserved keyword)
 assign tlp_or_dllp_out = tlp_or_dllp_out_reg;
 
 endmodule

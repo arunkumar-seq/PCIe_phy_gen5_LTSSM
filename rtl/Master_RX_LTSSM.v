@@ -16,7 +16,7 @@ module  masterRxLTSSM #(parameter MAXLANES = 16 , DEVICETYPE = 0,
     output reg finish,
     output reg [4:0]exitTo,
     output reg [15:0]resetOsCheckers,
-    output [3:0]lpifStatus,
+    output [3:0]lpifStatus, // BUGFIX-045: driven to 4'b0 below (was undriven)
     output reg [2:0]timeToWait,
     output reg enableTimer,
     output reg startTimer,
@@ -69,10 +69,17 @@ parameter t0ms = 3'd0,t12ms= 3'd1,t24ms = 3'd2,t48ms = 3'd3,t2ms = 3'd4,t8ms = 3
         if(!reset)
         begin
             currentState <= start;
-	        finish <= 1'b0;
 		    lastState<=4'hF;
-            lastState_next<=4'hF;
 		    //forcedetectflag<=1'b0;
+            // FSM-003: 'finish' and 'lastState_next' were ALSO assigned in
+            // this clocked reset branch while the combinational next-state
+            // block drives them too (multiple-driver conflict). Root cause:
+            // the old code 'reset' them here because the comb block used
+            // broken NBA-latch semantics; with the BUGFIX-016 combinational
+            // defaults (finish=0 strobe, lastState_next=lastState hold) the
+            // clocked assignments are redundant and illegal. Fix: removed
+            // from the clocked block. Verified by: yosys check (no
+            // conflicting drivers for finish/lastState_next).
         end
         else
         begin
@@ -81,8 +88,30 @@ parameter t0ms = 3'd0,t12ms= 3'd1,t24ms = 3'd2,t48ms = 3'd3,t2ms = 3'd4,t8ms = 3
         end    
     end
 
+    // BUGFIX-016:
+    // Original issue: this combinational next-state/output block assigned
+    // finish, exitTo, startTimer, resetTimer, enableTimer, timeToWait,
+    // comparatorsCount, resetOsCheckers and nextState only inside selected
+    // branches. Every unassigned path inferred a latch; in particular
+    // 'finish' and 'exitTo' latched their previous values, so a stale
+    // finish=1 could be re-sampled by mainLTSSM later and cause spurious
+    // LTSSM transitions.
+    // Root cause: missing combinational defaults.
+    // Fix: explicit defaults below (finish/exitTo are now clean one-cycle
+    // strobes; timer controls default to deasserted; nextState holds).
+    // Verified by: yosys proc/check (no latches), slang elaboration.
     always @(*)
     begin
+        nextState = currentState;      // hold (was latch)
+        finish = 1'b0;                 // one-shot strobe (was latch)
+        exitTo = detectQuiet;          // meaningful only with finish=1
+        startTimer = 1'b0;
+        enableTimer = 1'b0;
+        resetTimer = 1'b0;
+        timeToWait = t0ms;
+        comparatorsCount = 5'd0;
+        resetOsCheckers = 16'b0;
+        lastState_next = lastState;    // hold (was latch)
         case(currentState)
         start:
         begin
@@ -255,5 +284,12 @@ begin
     else if(numberOfDetectedLanes == 5'd16)comparatorsCondition= {16{1'b1}};
     else comparatorsCondition = 16'd0;
 end
+
+// BUGFIX-045: lpifStatus was declared as an output but never driven
+// anywhere (floating 4-bit output = X in simulation, undriven net in
+// synthesis). Root cause: port reserved for an LPIF status mirror that was
+// never implemented in this RX-side sequencer. Fix: drive a defined
+// constant 0. Verified by: yosys check -noinit (no undriven warnings).
+assign lpifStatus = 4'b0;
 
 endmodule

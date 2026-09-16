@@ -30,6 +30,18 @@ module Master_Tx(input wire turnOff, input wire [1:0]syncHeader, input wire [5:0
 				write[3] = 0;
 			end
 			
+		// BUGFIX-043 (documentation/verification of INTENTIONAL latches):
+	// the flags computed below - dataFlag, EIEOSFlag, ptrnResetGEN3,
+	// writeGEN3 and scramblingEnable - are deliberately self-holding
+	// ('dataFlag = dataFlag', 'writeGEN3 = (writeGEN3==4'hF)? ...')
+	// because they must remember pattern-control context ACROSS successive
+	// ordered-set blocks (e.g. scrambling stays disabled until the end of
+	// the OS, the LFSR is re-primed after an EIEOS). They are intentional
+	// tracking latches, equivalent in purpose to Scrambler reg1..reg4
+	// (BUGFIX-012); they are NOT to be edge-triggered. Blocking assignments
+	// are used throughout so the latch semantics are well-defined.
+	// Verified by: yosys proc (latches reported only for these documented
+	// signals), Scrambler/Descrambler regression.
 	always@*
 		begin
 		if(syncHeader == 2'b10)

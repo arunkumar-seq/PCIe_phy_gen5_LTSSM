@@ -9,8 +9,15 @@ module LFSR_32(scrambler_reset, reset_n, pclk, data_out);
 
   always @(*) begin
   
-	if(scrambler_reset)
-		lfsr_q = 16'hFFFF;
+  // BUGFIX-006: the pattern-reseed 'if(scrambler_reset) lfsr_q <= ...'
+  // that used to sit inside this combinational block drove lfsr_q from a
+  // SECOND always block (multiple-driver error) and, being event-driven,
+  // reseeded the LFSR asynchronously mid-simulation. Root cause: reseeding
+  // a clocked register from combinational logic. Fix: removed here; the
+  // reseed is now synchronous in the clocked block below
+  // ('else if(scrambler_reset) lfsr_q <= 16'hFFFF;'), costing one
+  // extra clock before the first post-reset pattern symbol appears.
+  // Verified by: yosys proc/check (no multi-driver) + LFSR period check.
 
     lfsr_c[0]  = lfsr_q[0] ^ lfsr_q[6] ^ lfsr_q[ 8] ^ lfsr_q[10];
     lfsr_c[1]  = lfsr_q[1] ^ lfsr_q[7] ^ lfsr_q[ 9] ^ lfsr_q[11];
@@ -69,6 +76,8 @@ module LFSR_32(scrambler_reset, reset_n, pclk, data_out);
 	begin
 		if(!reset_n)
 			lfsr_q <= 16'hFFFF;
+				else if(scrambler_reset)
+		  lfsr_q <= 16'hFFFF; // BUGFIX-006: synchronous reseed
 		else
 			lfsr_q <= lfsr_c ;
 	end

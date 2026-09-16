@@ -1,5 +1,20 @@
+// SIMULATION-ONLY testbench for the PCIe top-level (NOT synthesizable).
+// BUGFIX-001:
+//   Original issue: module 'pcieTB' was defined TWICE - once inside rtl/PCIE.v
+//   (a synthesizable RTL file) and once in this file. Duplicate module
+//   definitions are an elaboration error when both files are compiled
+//   together, and embedding a testbench in synthesizable RTL violates the
+//   simulation/synthesis separation.
+//   Fix: the pcieTB definition was removed from rtl/PCIE.v and this file is
+//   now the single definition. The body kept here is the NEWER of the two
+//   duplicates (it matches the current PCIe port list, drives the
+//   equalization handshake and uses MAX_GEN=5); the older copy that used to
+//   live in this file referenced stale ports (e.g. 'linkUp' instead of
+//   'pl_linkUp') and could no longer elaborate against the DUT.
+// Verified by: slang elaboration of rtl/*.v with --top PCIe (no duplicate-
+//   definition error) and Questa flow scripts/questa_compile.do (NOT
+//   VERIFIED in this environment - see docs/RTL_CHANGELOG.md).
 
-/*
 module pcieTB;
     parameter MAXPIPEWIDTH = 32;
 	parameter DEVICETYPE = 0; //0 for downstream 1 for upstream
@@ -27,10 +42,11 @@ wire [LANESNUMBER-1:0]TxDetectRx_Loopback;
 //RX_signals
 wire [MAXPIPEWIDTH*LANESNUMBER-1:0]RxData;
 wire [LANESNUMBER-1:0]RxDataValid;////////////////////////////////////////
-wire	[(MAXPIPEWIDTH/8)*LANESNUMBER-1:0]RxDataK;
-reg	[LANESNUMBER-1:0]RxStartBlock;
-reg	[2*LANESNUMBER -1:0]RxSyncHeader;
-wire	[LANESNUMBER-1:0]RxValid;
+wire[(MAXPIPEWIDTH/8)*LANESNUMBER-1:0]RxDataK;
+wire[LANESNUMBER-1:0]RxStartBlock;
+wire[2*LANESNUMBER -1:0]RxSyncHeader;
+wire[LANESNUMBER-1:0]RxValid;
+wire [15:0]RxStandby;
 reg	[3*LANESNUMBER -1:0]RxStatus;
 reg [15:0]RxElectricalIdle;
 //commands and status signals
@@ -75,7 +91,7 @@ wire [64-1:0]pl_dlpend;
 wire [64-1:0]pl_tlpstart;
 wire [64-1:0]pl_tlpend;
 wire [64-1:0]pl_tlpedb;
-wire linkUp;
+wire pl_linkUp;
 //optional Message bus
 wire [7:0] M2P_MessageBus;
 reg  [7:0] P2M_MessageBus;
@@ -85,6 +101,7 @@ localparam[1:0]
         active_  = 2'd1,
         retrain_ = 2'd2;
 integer i;
+
 initial
 begin
     CLK = 0;
@@ -100,7 +117,15 @@ begin
     RxStatus={16{3'b011}};
     #10
     RxStatus=16'd0;
-	wait(linkUp);
+    lp_state_req = active_;
+    //wait(pl_state_sts == 3)
+    //lp_state_req = retrain_;
+    wait(GetLocalPresetCoeffcients == {16{1'b1}});
+    LocalTxCoefficientsValid = {16{1'b1}};
+    LocalTxPresetCoefficients={16*18{1'b1}};
+    LocalLF={16*6{1'b1}};
+    LocalFS={16*6{1'b1}};
+	wait(pl_linkUp && pl_speedmode==3'd4 && pl_state_sts==active_);
 	lp_state_req = active_;
 	@(negedge CLK);
 	lp_irdy=1;
@@ -113,12 +138,12 @@ begin
 		lp_dlpstart[i]=0;
 	end
 	lp_valid={2'b00, {62{1'b1}}};
-	lp_dlpstart[0]=1;
-	lp_dlpend[61]=1;
+	lp_tlpstart[0]=1;
+	lp_tlpend[61]=1;
+    // lp_dlpstart[0]=1;
+    // lp_dlpend[5]=1;
 	#10
 	lp_irdy=0;
-
-
 end
 always #5 CLK = ~CLK;
 
@@ -135,7 +160,7 @@ PCIe #(
 	. GEN3_PIPEWIDTH (8) ,								
 	. GEN4_PIPEWIDTH (8) ,	
 	. GEN5_PIPEWIDTH (8) ,	
-	. MAX_GEN (1)
+	. MAX_GEN (5)
 )
 pcie
 (
@@ -183,7 +208,6 @@ FS,
 RxEqEval,
 InvalidRequest,
 LinkEvaluationFeedbackDirectionChange,
-
 pl_trdy,
 lp_irdy,
 lp_data,
@@ -204,12 +228,11 @@ pl_dlpend,
 pl_tlpstart,
 pl_tlpend,
 pl_tlpedb,
-linkUp,
+pl_linkUp,
 //optional Message bus
 M2P_MessageBus,
-P2M_MessageBus
+P2M_MessageBus,
+RxStandby
 );
-
-assign {RxData,RxDataValid,RxDataK,RxValid} = {TxData,TxDataValid,TxDataK,TxDataValid}; 
+assign {RxData,RxDataValid,RxDataK,RxValid,RxSyncHeader,RxStartBlock} = {TxData,TxDataValid,TxDataK,TxDataValid,TxSyncHeader,TxStartBlock}; 
 endmodule
-*/

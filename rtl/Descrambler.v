@@ -47,7 +47,9 @@ module Descrambler(input wire clk, input wire reset, input wire turnOff, input w
 	always@(*)
 		if(!reset)
 			begin
-			reg1 <= 0;
+			// BUGFIX-012: see Scrambler.v - reg1..reg4 are intentional byte-tracking
+			// latches; blocking assignments give correct latch semantics.
+			reg1 = 0;
 			reg2 <= 0;
 			reg3 <= 0;
 			reg4 <= 0;
@@ -55,15 +57,20 @@ module Descrambler(input wire clk, input wire reset, input wire turnOff, input w
 		else 
 			begin
 			if(advance[0] == 1)
-				reg1 <= lfsrOut[7:0];
+				reg1 = lfsrOut[7:0];
 			if(advance[1] == 1)
-				reg2 <= lfsrOut[15:8];
+				reg2 = lfsrOut[15:8];
 			if(advance[2] == 1)
-				reg3 <= lfsrOut[23:16];
+				reg3 = lfsrOut[23:16];
 			if(advance[3] == 1)
-				reg4 <= lfsrOut[31:24];
+				reg4 = lfsrOut[31:24];
 			end
 
+	// BUGFIX-014: 'data' was driven by TWO always@* blocks (GEN<3 gated by
+	// PIPEDataK, GEN>=3 gated by descramblingEnable) - an illegal multiple
+	// driver. Root cause: generation paths split across blocks. Fix: merged
+	// into one always@* selecting the gating condition by generation; logic
+	// per branch is unchanged. Verified by: slang elaboration + yosys check.
 	always@*
 		begin
 			if(GEN < 3)
@@ -85,11 +92,7 @@ module Descrambler(input wire clk, input wire reset, input wire turnOff, input w
 				else 
 					data[31:24] = PIPEData[31:24];
 			end
-		end
-		
-		always@*
-		begin
-			if(GEN >= 3)
+			else
 			begin
 				if(descramblingEnable[0])
 					data[7:0] = reg1 ^ PIPEData[7:0];

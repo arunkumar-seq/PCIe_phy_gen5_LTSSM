@@ -22,7 +22,7 @@ module PIPERxDataTb();
 	end
 
 	always@(posedge clk)
-		$monitor ("%0dns: \$monitor: PIPEDataValid = %d PIPEData = %h PIPEDataK = %d", $stime, PIPEDataValid, PIPEData, PIPEDataK);
+		$monitor ("%0dns: $monitor: PIPEDataValid = %d PIPEData = %h PIPEDataK = %d", $stime, PIPEDataValid, PIPEData, PIPEDataK);
 
 	initial 
 	begin

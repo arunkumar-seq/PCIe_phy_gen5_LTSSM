@@ -92,7 +92,8 @@ parameter t12ms= 3'b001,t0ms = 3'b000 , t1ms=3'b110;
 //Generation
 parameter Gen1 = 3'b001,Gen2 = 3'b010,Gen3 = 3'b011,Gen4 = 3'b100,Gen5 = 3'b101; // TODO edited
 //internal Register 
-reg idleCounts;
+reg [15:0]idleCounts; // BUGFIX-035:
+reg startSend16_q; // BUGFIX-036: synchronous edge-detect register for startSend16 was 1 bit wide; it stores an OSCount snapshot (16-bit) used by the Configuration.Idle exit condition 'OSCount-idleCounts > 6', which was truncated to the LSB
 reg [4:0]State;
 wire [4:0]NextState;
 reg [4:0] ExitToState;
@@ -150,8 +151,10 @@ always @ * begin
 		end	
 		DetectActive:begin
 			if (DetectStatus == {LANESNUMBER{1'b1}} )begin
-				DetectLanes = DetectStatus;
-				WriteDetectLanesFlagReg<=1;
+				// BUGFIX-018: DetectLanes/WriteDetectLanesFlagReg were written
+				// in this combinational block without defaults (latch
+				// inference). They are now registered in the clocked block
+				// below under the very same condition.
 				ExitToState = PollingActive;
 				ExitToFlag  = 1 ;
 			end	
@@ -192,20 +195,20 @@ always @ * begin
 		end
 		RecoveryRcvrLock:begin //////////////TODO ask Emad 
 			if(OSGeneratorFinish)begin 
-				ExitToState<=RecoveryRcvrCfg;
-				ExitToFlag<=1;				
+				ExitToState=RecoveryRcvrCfg; // BUGFIX-018: was NBA inside always @(*)
+				ExitToFlag=1;				
 			end
 		
 		end
 		RecoveryRcvrCfg:begin
 			if(OSGeneratorFinish)begin 
 				if(ReadDirectSpeedChange)begin
-					ExitToState<=RecoverySpeed;
-					ExitToFlag<=1;
+					ExitToState=RecoverySpeed; // BUGFIX-018: was NBA inside always @(*)
+					ExitToFlag=1;
 				end
 				else begin
-					ExitToState<=RecoveryIdle;
-					ExitToFlag<=1;
+					ExitToState=RecoveryIdle; // BUGFIX-018: was NBA inside always @(*)
+					ExitToFlag=1;
 				end
 			end
 		
@@ -213,27 +216,27 @@ always @ * begin
 		RecoverySpeed:begin
 			if(TimeOut && OSCount >= 2)begin
 				if(TrainToGen>=Gen3)begin
-					ExitToState<=Ph0;
-					ExitToFlag<=1;
+					ExitToState=Ph0; // BUGFIX-018: was NBA inside always @(*)
+					ExitToFlag=1;
 				end
 				else begin
-					ExitToState<=RecoveryRcvrLock;
-					ExitToFlag<=1;
+					ExitToState=RecoveryRcvrLock; // BUGFIX-018: was NBA inside always @(*)
+					ExitToFlag=1;
 				end
 			end
 		end
 		RecoveryIdle:begin
 		if( OSCount >= 6)begin
-					ExitToState<=L0;
-					ExitToFlag<=1;
+					ExitToState=L0; // BUGFIX-018: was NBA inside always @(*)
+					ExitToFlag=1;
 		end		
 		end
 
 		recoverywait:begin
 			if(RxStandby)
 			begin
-				ExitToState<=recoverySpeedeieos;
-				ExitToFlag<=1;
+				ExitToState=recoverySpeedeieos; // BUGFIX-018: was NBA inside always @(*)
+				ExitToFlag=1;
 			end
 		end
 
@@ -386,7 +389,8 @@ RxStandby<=16'b0;
 					MuxSel <=0;
 					OSType<=3'b110;
 					OSGeneratorStart<=1;
-					SDSFlag<=1;					
+					// FSM-004: SDSFlag set moved to the single owner block
+					// below (was a second clocked driver of SDSFlag).
 				end
 				if(SDSFlag && OSGeneratorFinish)begin
 					HoldFIFOData<=0;
@@ -452,17 +456,10 @@ RxStandby<=16'b0;
 			end
 		end
 
-		recoverySpeedeieos:begin
-			HoldFIFOData<=1;
-			MuxSel <=0; //TODO : check is it 1 or 0 for orderset
-			//ElecIdleReq <= {LANESNUMBER{1'b1}};
-			if(!OSGeneratorBusy)begin 
-				OSType<=3'b101; //eieos
-				OSGeneratorStart<=1;
-			end
-		end
-
-		recoverywait:begin
+		// BUGFIX-037: a second, byte-for-byte duplicate 'recoverySpeedeieos' case
+// item used to follow here. Duplicate case items are illegal in synthesis
+// and a source of confusion; the first (identical) item above is kept.
+recoverywait:begin
 			HoldFIFOData<=1;
 			MuxSel <=0; //TODO : check is it 1 or 0 for orderset
 			if(!OSGeneratorBusy)begin
@@ -546,11 +543,17 @@ RxStandby<=16'b0;
 		RecoveryIdle:begin
 			HoldFIFOData<=1;
 			MuxSel <=0; //TODO : check is it 1 or 0 for orderset
-			ElecIdleReq <= {LANESNUMBER{1'b1}};
+			// BUGFIX-034 (protocol): ElecIdleReq used to be asserted here.
+			// In Recovery.Idle the LTSSM must EXIT electrical idle and
+			// transmit IDLE data (PCIe Base Spec, Recovery.Idle), so forcing
+			// TxElecIdle high via ElecIdleReq while the OS generator sends
+			// IDLE/SDS contradicts the protocol (the PHY would suppress the
+			// idle data). Detect states remain the only states that force
+			// electrical idle via ElecIdleReq.
 			if(!OSGeneratorBusy)begin 
 				if(Gen>=3'b011 && !SDSFlag)begin
 					OSType<=3'b110; //sds
-					SDSFlag<=1;
+					// FSM-004: SDSFlag set moved to the owner block below.
 				end
 				else begin
 					OSType<=3'b100; //idle
@@ -669,7 +672,7 @@ TimerStart <= 0;
 			end
 			else if (NextState==RecoveryIdle)begin
 				OSCount<= 0;
-				SDSFlag<=0;
+				// FSM-004: SDSFlag clear moved to the owner block below.
 			end
 		end
 		
@@ -695,7 +698,7 @@ TimerStart <= 0;
 			else if (NextState == PollingActive || NextState == PollingConfigration 
 			|| NextState == ConfigrationComplete || NextState==L0)begin
 				OSCount<=0;		
-				SDSFlag<=0;
+				// FSM-004: SDSFlag clear moved to the owner block below.
 			end			
 		end		
 		default:begin
@@ -722,21 +725,80 @@ begin
 		CurrentGen=Gen1;
 		WriteDetectLanesFlag<=0;
 		SDSFlag<=0;
+		DetectLanes <= {LANESNUMBER{1'b0}};      // BUGFIX-018 reset
+		WriteDetectLanesFlagReg <= 1'b0;         // BUGFIX-018 reset
 	end
 	else begin
+		// FSM-004: SDSFlag was written from THREE separate clocked blocks
+		// (set here in L0/RecoveryIdle, cleared in the timer-control block,
+		// reset here) - multiple conflicting drivers. Root cause: one flag
+		// owned by several processes. Fix: this block is now the single
+		// owner; the set/clear conditions are decoded combinationally below
+		// exactly as they appeared in the former branches. Clear has
+		// priority; set and clear are mutually exclusive by state.
+		// (idleCounts/startSend16_q resets moved to the capture block,
+		// BUGFIX-036.)
+		if (sdsFlagClr)
+			SDSFlag <= 1'b0;
+		else if (sdsFlagSet)
+			SDSFlag <= 1'b1;
 		turnOffScrambler_flag <= turnOffScrambler_flag_next2;
 		turnOffScrambler_flag_next2<=turnOffScrambler_flag_next;
 		State   <= NextState;
 		TXExitTo<= ExitToState;
 		TXFinishFlag <= ExitToFlag;
+		// BUGFIX-018: DetectLanes used to be assigned in the combinational
+		// exit-to block (latch), and WriteDetectLanesFlagReg latched 1
+		// forever once set (so WriteDetectLanesFlag was asserted every cycle
+		// for the rest of the link's life). Both are now registered here:
+		// DetectLanes captures the detection result and the write flag is a
+		// proper one-cycle strobe.
+		if (State == DetectActive && DetectStatus == {LANESNUMBER{1'b1}}) begin
+			DetectLanes <= DetectStatus;
+			WriteDetectLanesFlagReg <= 1'b1;
+		end
+		else begin
+			WriteDetectLanesFlagReg <= 1'b0;
+		end
 		WriteDetectLanesFlag<=WriteDetectLanesFlagReg;
 	end
 end
 
 
-always @(posedge startSend16) 
+// BUGFIX-036:
+// Original issue: idleCounts was captured with 'always @(posedge
+// startSend16)' - an asynchronous event control on a control signal coming
+// from another block (mainLTSSM). This is a clock-domain-crossing style
+// hazard (event-driven sampling, unsynthesizable as intended hardware).
+// Root cause: event-driven capture instead of synchronous edge detection.
+// Fix: detect the rising edge of startSend16 synchronously on Pclk and
+// capture OSCount on that edge. startSend16 is already Pclk-synchronous
+// (combinational decode in mainLTSSM), so no extra synchronizer is needed.
+// Verified by: review + tb/regress directed tests (Configuration.Idle exit).
+// (startSend16_q declared with the other regs above, BUGFIX-036.)
+always @(posedge Pclk)
 begin
-	idleCounts = OSCount; 	
+	// BUGFIX-036 (amended): reset handling lives here so that idleCounts
+	// and startSend16_q have exactly ONE clocked owner (FSM-004 style
+	// consolidation; formerly also reset from the outputs block).
+	if(!Reset) begin
+		startSend16_q <= 1'b0;
+		idleCounts <= 16'd0;
+	end
+	else begin
+		startSend16_q <= startSend16;
+		if (startSend16 && !startSend16_q)
+			idleCounts <= OSCount;
+	end
 end
+
+// FSM-004 decode logic (see the owner block above).
+wire sdsFlagSet = ((State == L0) && (Gen >= 3'b011) && !OSGeneratorBusy && !SDSFlag)
+               || ((State == RecoveryIdle) && !OSGeneratorBusy && (Gen >= 3'b011) && !SDSFlag);
+wire sdsFlagClr = ((State == RecoveryRcvrCfg) && (NextState == RecoveryIdle))
+               || ((State == RecoveryIdle) && (NextState == PollingActive
+                                              || NextState == PollingConfigration
+                                              || NextState == ConfigrationComplete
+                                              || NextState == L0));
 
 endmodule

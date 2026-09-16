@@ -20,7 +20,17 @@ TransmitterPresetHintUSP,LF_register,FS_register,CursorCoff_register,PreCursorCo
 TxSyncHeader1,TxSyncHeader2,TxSyncHeader3,TxSyncHeader4,TxSyncHeader5,TxSyncHeader6,TxSyncHeader7,TxSyncHeader8,TxSyncHeader9,TxSyncHeader10,TxSyncHeader11,
 TxSyncHeader12,TxSyncHeader13,TxSyncHeader14,TxSyncHeader15,TxSyncHeader16,
 TxStartBlock1,TxStartBlock2,TxStartBlock3,TxStartBlock4,TxStartBlock5,TxStartBlock6,TxStartBlock7,TxStartBlock8,TxStartBlock9,
-TxStartBlock10,TxStartBlock11,TxStartBlock12,TxStartBlock13,TxStartBlock14,TxStartBlock15,TxStartBlock16,turnOff,RxStandby,startSend16,,turnOffScrambler_flag);
+TxStartBlock10,TxStartBlock11,TxStartBlock12,TxStartBlock13,TxStartBlock14,TxStartBlock15,TxStartBlock16,turnOff,RxStandby,startSend16,turnOffScrambler_flag);
+// BUGFIX-009:
+// Original issue: the non-ANSI port list above contained an empty port slot
+// ("startSend16,,turnOffScrambler_flag") - slang reports
+// "port has no name and no connection ... unintentional extra comma".
+// Root cause: a port was deleted from the list at some point but its comma
+// was left behind, creating an anonymous unconnected port.
+// Fix: removed the stray comma. All instantiations of TOP_MODULE use named
+// port connections (rtl/PCIE.v), so removing the anonymous slot cannot break
+// any connection.
+// Verified by: slang elaboration (-Wnull-port warning gone).
 
 //lane number 
 input [7:0] rateIdIn;
@@ -121,6 +131,13 @@ input  [6*16-1:0]PostCursorCoff_register;
 wire [31:0]scramblerDataOut1,scramblerDataOut2, scramblerDataOut3,scramblerDataOut4, scramblerDataOut5,scramblerDataOut6,scramblerDataOut7,scramblerDataOut8,scramblerDataOut9,scramblerDataOut10, scramblerDataOut11, scramblerDataOut12,scramblerDataOut13, scramblerDataOut14,scramblerDataOut15,scramblerDataOut16;
 wire [3:0] scramblerDataK1, scramblerDataK2, scramblerDataK3, scramblerDataK4, scramblerDataK5, scramblerDataK6, scramblerDataK7, scramblerDataK8, scramblerDataK9, scramblerDataK10, scramblerDataK11, scramblerDataK12, scramblerDataK13, scramblerDataK14, scramblerDataK15,scramblerDataK16;
 wire  scramblerDataValid1,scramblerDataValid2,scramblerDataValid3,scramblerDataValid4,scramblerDataValid5,scramblerDataValid6,scramblerDataValid7,scramblerDataValid8,scramblerDataValid9,scramblerDataValid10,scramblerDataValid11,scramblerDataValid12,scramblerDataValid13,scramblerDataValid14,scramblerDataValid15,scramblerDataValid16;
+// BUGFIX-021 (GitHub issue #61): per-lane 'TX active' vector feeding
+// PIPE_Control.TxActive so TxElecIdle can deassert in the same cycle the
+// lane's TX data path starts emitting symbols (first TS in Polling).
+wire [LANESNUMBER-1:0] txActiveVec = {scramblerDataValid16, scramblerDataValid15, scramblerDataValid14, scramblerDataValid13,
+                                      scramblerDataValid12, scramblerDataValid11, scramblerDataValid10, scramblerDataValid9,
+                                      scramblerDataValid8,  scramblerDataValid7,  scramblerDataValid6,  scramblerDataValid5,
+                                      scramblerDataValid4,  scramblerDataValid3,  scramblerDataValid2,  scramblerDataValid1};
 
 wire[511:0] os_data;
 wire [63:0] os_datak;
@@ -162,7 +179,7 @@ begin
 PIPE_Control PIPE_CTL(.substate(SetTXState),.generation(gen), .pclk(pclk), .reset_n(reset_n), .RxStatus(RxStatus[3*i+:3]),
  .ElecIdle_req(ElecIdleReq[i]), .Detect_req(DetectReq[i]), .PhyStatus(PhyStatus[i]), .TxDetectRx_Loopback(TxDetectRx_Loopback[i]),
  .PowerDown(PowerDown[4*i+:4]), .Detect_status(DetectStatus[i]), .TxElecIdle(TxElecIdle[i]),.RxStandbyRequest(RxStandbyRequest[i])
- ,.RxStandby(RxStandby[i]));
+ ,.RxStandby(RxStandby[i]), .TxActive(txActiveVec[i])); // BUGFIX-021: issue #61 wiring
 end
 
 endgenerate
