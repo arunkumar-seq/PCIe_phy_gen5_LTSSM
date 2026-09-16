@@ -23,7 +23,7 @@ module LPIF_tb();
 	end
 
 	always@(posedge clk)
-		$monitor ("%0dns: \$monitor:packetData = %h LPIF Data = %h", $stime, packetData, lpifData);
+		$monitor ("%0dns: $monitor:packetData = %h LPIF Data = %h", $stime, packetData, lpifData);
 
 	initial 
 	begin

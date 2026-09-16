@@ -19,7 +19,7 @@ module LMC_tb();
 	end
 
 	always@(posedge clk)
-		$monitor ("%0dns: \$monitor:GEN = %d LANESNUMBER = %d descramblerDataK = %h LMCDataK = %b LMCIn = %h LMCData = %h", $stime, GEN, LANESNUMBER, descramblerDataK, LMCDataK, LMCIn, LMCData);
+		$monitor ("%0dns: $monitor:GEN = %d LANESNUMBER = %d descramblerDataK = %h LMCDataK = %b LMCIn = %h LMCData = %h", $stime, GEN, LANESNUMBER, descramblerDataK, LMCDataK, LMCIn, LMCData);
 
 	initial 
 	begin

@@ -27,8 +27,8 @@ localparam [3:0]
     configurationLinkWidthAccept = 3'd5,
     configurationLanenumWait = 3'd6,
     configurationLanenumAccept = 3'd7,
-    configurationComplete = 3'd8,
-    configurationIdle = 3'd9;
+    configurationComplete = 4'd8, // BUGFIX-033: was 3'd8 (value does not fit in 3 bits)
+    configurationIdle = 4'd9;     // BUGFIX-033: was 3'd9 (value does not fit in 3 bits)
 
 os_checker #(0) test(clk,
     linkNumber,

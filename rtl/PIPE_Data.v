@@ -34,12 +34,26 @@ always @(/*posedge pclk or negedge reset_n*/*) begin
   		TxData= scramblerDataOut[pipe_width_gen1-1:0];
   		TxDataK=scramblerDataK[(pipe_width_gen1/8)-1:0];
   		TxDataValid= scramblerDataValid;
+  		// BUGFIX-042: Gen1/2 branches left TxSyncHeader/TxStartBlock
+  		// unassigned, inferring latches (these fields are only meaningful
+  		// from Gen3 up). Root cause: missing defaults. Fix: drive 0 here
+  		// (block framing is unused at 2.5/5 GT/s). Verified by: yosys proc
+  		// (no $dlatch in PIPE_Data).
+  		TxSyncHeader = 0;
+  		TxStartBlock = 0;
   end
   else if (generation==2) begin
-  //  	pipe_width=pipe_width_gen2;
+//  		pipe_width=pipe_width_gen2;
   		TxData= scramblerDataOut[pipe_width_gen2-1:0];
   		TxDataK=scramblerDataK[(pipe_width_gen2/8)-1:0];
   		TxDataValid= scramblerDataValid;
+  		// BUGFIX-042 (gen2): Gen1/2 branches left TxSyncHeader/TxStartBlock
+  		// unassigned, inferring latches (these fields are only meaningful
+  		// from Gen3 up). Root cause: missing defaults. Fix: drive 0 here
+  		// (block framing is unused at 2.5/5 GT/s). Verified by: yosys proc
+  		// (no $dlatch in PIPE_Data).
+  		TxSyncHeader = 0;
+  		TxStartBlock = 0;
   end 
   else if (generation==3) begin
    // 	pipe_width=pipe_width_gen3;

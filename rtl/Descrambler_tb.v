@@ -27,7 +27,7 @@ module descrambler_tb();
 	end
 
 	always@(posedge clk)
-		$monitor ("%0dns: \$monitor: PIPEData = %h ScramblerData = %h DescramblerData = %h", $stime, PIPEData, scramblerData, descramblerData);
+		$monitor ("%0dns: $monitor: PIPEData = %h ScramblerData = %h DescramblerData = %h", $stime, PIPEData, scramblerData, descramblerData);
 
 	initial 
 	begin

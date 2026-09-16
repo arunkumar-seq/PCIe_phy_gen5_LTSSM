@@ -53,6 +53,7 @@ parameter LANESNUMBER = 16)
     output 	reg[6*16 -1:0]FS,
     output 	reg[16 -1:0]RxEqEval,
     output 	reg[16 -1:0]InvalidRequest,
+
     output  reg directed_speed_change,
     output  reg[47:0] ReceiverpresetHintDSP,
     output  reg[63:0] TransmitterPresetHintDSP,
@@ -87,6 +88,19 @@ parameter LANESNUMBER = 16)
     reg [3:0]currentState,nextState;
     reg [4:0] substateTxnext,substateRxnext;
     integer i;
+    // BUGFIX-017b/010/011: helper signals for the latch-free, single-driver
+    // re-implementation of the output handling block (see comments there):
+    //   dscSet/dscClr      -> registered set/clear of directed_speed_change
+    //   trainSpeedSet      -> register trainToGen on a directed speed change
+    //   genWrite           -> register GEN update (speed change commit)
+    //   eqPhase0/eqPhase1  -> register equalization outputs (were latches)
+    reg dscSet, dscClr, trainSpeedSet, genWrite;
+    reg [2:0] trainToGenNext;
+    reg eqPhase0, eqPhase1;              // write enables for eq. registers
+    reg [18*16 -1:0] TxDeemph_c;
+    reg [4*16 -1:0]  LocalPresetIndex_c;
+    reg [6*16-1:0]   LF_register_c, FS_register_c, CursorCoff_c, PreCursorCoff_c, PostCursorCoff_c;
+    reg [6*16-1:0]   LF_c, FS_c;
     
 //Local parameters
     //LPIF STATES
@@ -126,9 +140,19 @@ parameter LANESNUMBER = 16)
         else disableScrambler<=1'b0;      
     end
 
+    // FSM-001: 'forceDetect' was part of the ASYNC reset condition
+    // ('if(!reset || forceDetect)') while not being in the sensitivity
+    // list, which yosys rejects ("Multiple edge sensitive events") and
+    // which would synthesize as an asynchronous reset driven by ordinary
+    // control logic (a false async path). Root cause: async-reset
+    // expression referencing a non-edge signal. Fix: forceDetect is now a
+    // SYNCHRONOUS reset applied in the cycle after it is asserted, using
+    // exactly the same initialization values as the async reset path.
+    // Verified by: yosys proc (process converts cleanly), slang.
+    wire initCond = (!reset) || forceDetect;
     always @(posedge clk or negedge reset)
     begin
-        if(!reset || forceDetect)
+        if(!reset)
         begin
             currentState <= reset_;
             ReceiverpresetHintDSP<=48'hAABBCCDD1122;
@@ -136,7 +160,42 @@ parameter LANESNUMBER = 16)
             ReceiverpresetHintUSP<=48'h2211DDCCBBAA;
             TransmitterPresetHintUSP<=64'h11AA22BB33CC44DD;
             GEN <= 3'd1;
-            
+            // BUGFIX-011/017b: give the formerly latch-inferred outputs a
+            // defined reset value (they were X until first written).
+            directed_speed_change <= 1'b0;
+            trainToGen <= 3'd0;
+            GetLocalPresetCoeffcients <= {16{1'b0}};
+            LocalPresetIndex <= {4*16{1'b0}};
+            TxDeemph <= {18*16{1'b0}};
+            LF_register <= {6*16{1'b0}};
+            FS_register <= {6*16{1'b0}};
+            CursorCoff <= {6*16{1'b0}};
+            PreCursorCoff <= {6*16{1'b0}};
+            PostCursorCoff <= {6*16{1'b0}};
+            LF <= {6*16{1'b0}};
+            FS <= {6*16{1'b0}};
+        end
+        else if(forceDetect)
+        begin
+            // FSM-001: synchronous re-initialization (same values as reset)
+            currentState <= reset_;
+            ReceiverpresetHintDSP<=48'hAABBCCDD1122;
+            TransmitterPresetHintDSP<=64'h11AA22BB33CC44DD;
+            ReceiverpresetHintUSP<=48'h2211DDCCBBAA;
+            TransmitterPresetHintUSP<=64'h11AA22BB33CC44DD;
+            GEN <= 3'd1;
+            directed_speed_change <= 1'b0;
+            trainToGen <= 3'd0;
+            GetLocalPresetCoeffcients <= {16{1'b0}};
+            LocalPresetIndex <= {4*16{1'b0}};
+            TxDeemph <= {18*16{1'b0}};
+            LF_register <= {6*16{1'b0}};
+            FS_register <= {6*16{1'b0}};
+            CursorCoff <= {6*16{1'b0}};
+            PreCursorCoff <= {6*16{1'b0}};
+            PostCursorCoff <= {6*16{1'b0}};
+            LF <= {6*16{1'b0}};
+            FS <= {6*16{1'b0}};
         end
         else
         begin
@@ -153,40 +212,75 @@ parameter LANESNUMBER = 16)
             if(writeTransmitterPresetHintDSP)TransmitterPresetHintDSP <=TransmitterPresetHintDSPIn;
             if(write_directed_speed_change) directed_speed_change <= directed_speed_change_In;
             if(writeRateId)rateId <= rateIdIn;
+            // BUGFIX-011/017b/017c/017d: registered updates replacing the
+            // latch-inferred / multiply-driven combinational outputs.
+            // The FSM set/clear flags take precedence over the LPIF-directed
+            // write (both are never asserted together by construction).
+            if(dscSet)            directed_speed_change <= 1'b1;
+            else if(dscClr)       directed_speed_change <= 1'b0;
+            if(trainSpeedSet)     trainToGen <= trainToGenNext;
+            if(genWrite)          GEN <= trainToGen;
+            if(eqPhase0) begin
+                GetLocalPresetCoeffcients <= {16{1'b1}};
+                LocalPresetIndex <= LocalPresetIndex_c;
+                if(LocalTxCoefficientsValid=={16{1'b1}}) begin
+                    TxDeemph <= TxDeemph_c;
+                    LF_register <= LF_register_c;
+                    FS_register <= FS_register_c;
+                    CursorCoff <= CursorCoff_c;
+                    PreCursorCoff <= PreCursorCoff_c;
+                    PostCursorCoff <= PostCursorCoff_c;
+                end
+            end
+            if(eqPhase1) begin
+                LF <= LF_c;
+                FS <= FS_c;
+            end
         end    
     end
 
 //next LPIF state handling
+    // BUGFIX-017a:
+    // Original issue: this combinational block used non-blocking assignments
+    // (nextState <= ...) and had no default for branches whose conditions
+    // were false, so nextState was inferred as a latch in simulation and is
+    // a combinational-default/lint error for synthesis.
+    // Root cause: NBA inside always @(*), missing defaults.
+    // Fix: blocking assignments + explicit hold default (nextState =
+    // currentState), which reproduces the previous latch-hold behavior
+    // without inferring storage.
+    // Verified by: yosys proc/check (no latch), slang elaboration.
     always @(*)
     begin
+       nextState = currentState; // default: hold (was an inferred latch)
        case (currentState)
         reset_:
         begin
             if(finishTx&&gotoTx==L0&&finishRx&&gotoRx==L0&&lpifStateRequest==active_)
             begin
-                nextState <= active_;
+                nextState = active_;
             end
         end
         active_:
         begin
             if(lpifStateRequest==reset_)
             begin
-               nextState <= reset_; 
+               nextState = reset_; 
             end
             else if(lpifStateRequest==retrain_ || trainToGen >= 3'd2)
             begin
-               nextState <= retrain_; 
+               nextState = retrain_; 
             end
         end
         retrain_:
         begin
             if(finishTx&&gotoTx==L0&&finishRx&&gotoRx==L0)
             begin
-               nextState <= active_; 
+               nextState = active_; 
             end
         end 
         default:
-            nextState <= reset_; 
+            nextState = reset_; 
        endcase 
         
     end
@@ -236,8 +330,58 @@ begin
 end
 
 //output handling block
+    // BUGFIX-017b:
+    // Original issue: this combinational block (a) assigned several outputs
+    // (lpifStateStatus, linkUp, startSend16, directed_speed_change,
+    // trainToGen, substateTxnext/substateRxnext and all equalization data
+    // outputs) only inside selected case branches, inferring latches for the
+    // unassigned paths, (b) used non-blocking assignments inside the
+    // combinational block, and (c) drove substateTx/substateRx directly with
+    // an NBA while the clocked block below also drives them (multiple
+    // driver - a synthesis error, see BUGFIX-010), and likewise drove GEN
+    // (BUGFIX-011).
+    // Root cause: missing combinational defaults + mixing of sequential
+    // assignment styles into a combinational process.
+    // Fix: explicit hold/safe defaults are assigned at the top of the block
+    // (reproducing the previous latch-hold behavior without storage),
+    // substate transitions now go through substateTxnext/substateRxnext
+    // only, and directed_speed_change/trainToGen/GEN plus the equalization
+    // data outputs are updated in the clocked domain via the write-enable
+    // flags computed here. No protocol state values were changed.
+    // Verified by: yosys proc/check (no latches, no multi-driver), slang
+    // elaboration, directed regression tb/regress/tb_ltssm_pipe_control.v.
     always @(*)
     begin
+        // ---- defaults (latch removal; hold semantics unless noted) ----
+        {substateTxnext,substateRxnext} = {substateTx,substateRx}; // hold
+        lpifStateStatus = currentState;   // status mirrors current LPIF state
+        linkUp = 1'b0;                    // cleared unless a branch sets it
+        startSend16 = 1'b0;               // one-shot pulse (was latch NBA)
+        dscSet = 1'b0; dscClr = 1'b0;     // directed_speed_change set/clear
+        trainSpeedSet = 1'b0; trainToGenNext = trainToGen;
+        genWrite = 1'b0;                  // GEN commit (speed change)
+        eqPhase0 = 1'b0; eqPhase1 = 1'b0; // equalization register enables
+        TxDeemph_c = {18*16{1'b0}};
+        LocalPresetIndex_c = {4*16{1'b0}};
+        LF_register_c = {6*16{1'b0}}; FS_register_c = {6*16{1'b0}};
+        CursorCoff_c = {6*16{1'b0}}; PreCursorCoff_c = {6*16{1'b0}};
+        PostCursorCoff_c = {6*16{1'b0}};
+        LF_c = {6*16{1'b0}}; FS_c = {6*16{1'b0}};
+        // FSM-002: 'nextState' is driven ONLY by the LPIF next-state block
+        // above (BUGFIX-017a). Original code ALSO assigned it from this
+        // block's 'default:' case item, creating two combinational drivers
+        // of the same reg (multiple-driver error in synthesis; in
+        // simulation the result was a race between the blocks). Root
+        // cause: split ownership of the FSM next-state register. Fix:
+        // this block no longer drives nextState at all; the LPIF block's
+        // own default (nextState = currentState, plus 'default: reset_'
+        // for unlisted encodings) keeps the FSM total and latch-free -
+        // the stuck-LTSSM hazard noted for GitHub issues #74/#77 is
+        // addressed by that default.
+        // BUGFIX-040b: loop index 'i' was only assigned inside the phase0
+        // branch, latching it for all other evaluations. Fix: default 0.
+        // Verified by: yosys proc/check (no $dlatch, no multi-driver).
+        i = 0;
         //disableScrambler = 1'b1;
        case (currentState)
         reset_:
@@ -359,13 +503,19 @@ end
                 {configurationIdle,configurationIdle}:
                 begin
                     //disableScrambler = 1'b0;
-                    if (finishRx&&gotoRx==L0)startSend16<= 1'b1;
+                    if (finishRx&&gotoRx==L0)startSend16= 1'b1;
                     if (finishTx&&gotoTx==L0) 
                         begin
                             linkUp = 1'b1;
-                            startSend16 <= 1'b0;
+                            startSend16 = 1'b0;
                             lpifStateStatus = reset_;
-                            {substateTx,substateRx} <= {L0,L0};//ERASE THE COMMENT IF I CAN GOT TO L0 WITHOUT LPIF PERMISSION
+                            // BUGFIX-010: was "{substateTx,substateRx} <= {L0,L0}"
+                            // - a non-blocking write from this combinational
+                            // block onto registers that the clocked block below
+                            // also drives (multiple-driver synthesis error and
+                            // an NBA race in simulation). The transition is now
+                            // routed through the normal next-state path.
+                            {substateTxnext,substateRxnext}= {L0,L0};//ERASE THE COMMENT IF I CAN GOT TO L0 WITHOUT LPIF PERMISSION
                         end
                     else if((finishTx&&gotoTx==detectQuiet)||(finishRx&&gotoRx==detectQuiet))
                         begin
@@ -392,29 +542,41 @@ end
             linkUp = 1'b1;
             if((MAX_GEN==3'd3 && rateId[5:1] == 5'b00111)&&(GEN<3'd3)&&(!DEVICETYPE || (DEVICETYPE && finishRx &&gotoRx== recoveryRcvrLock)))
             begin
-                directed_speed_change = 1'b1;
-                trainToGen = 3'd3;
+                // BUGFIX-017c: directed_speed_change/trainToGen were latch-
+                // inferred combinational outputs; they are now registered via
+                // these write flags (see clocked block, BUGFIX-011/017b).
+                dscSet = 1'b1;
+                trainToGenNext = 3'd3; trainSpeedSet = 1'b1;
                 {substateTxnext,substateRxnext}= {recoveryRcvrLock,recoveryRcvrLock};
                 
             end
             else if((MAX_GEN==3'd2 && rateId[5:1] == 5'b00011)&&(GEN<3'd2)&&(!DEVICETYPE || (DEVICETYPE && finishRx &&gotoRx== recoveryRcvrLock)))
             begin
-                directed_speed_change = 1'b1;
-                trainToGen = 3'd2;
+                // BUGFIX-017c: directed_speed_change/trainToGen were latch-
+                // inferred combinational outputs; they are now registered via
+                // these write flags (see clocked block, BUGFIX-011/017b).
+                dscSet = 1'b1;
+                trainToGenNext = 3'd2; trainSpeedSet = 1'b1;
                 {substateTxnext,substateRxnext}= {recoveryRcvrLock,recoveryRcvrLock};
             end             
 
             else if((MAX_GEN==3'd4 && rateId[5:1] == 5'b01111)&&(GEN<3'd4)&&(!DEVICETYPE || (DEVICETYPE && finishRx &&gotoRx== recoveryRcvrLock)))
             begin
-                directed_speed_change = 1'b1;
-                trainToGen = 3'd4;
+                // BUGFIX-017c: directed_speed_change/trainToGen were latch-
+                // inferred combinational outputs; they are now registered via
+                // these write flags (see clocked block, BUGFIX-011/017b).
+                dscSet = 1'b1;
+                trainToGenNext = 3'd4; trainSpeedSet = 1'b1;
                 {substateTxnext,substateRxnext}= {recoveryRcvrLock,recoveryRcvrLock};
             end   
 
             else if((MAX_GEN==3'd5 && rateId[5:1] == 5'b11111)&&(GEN<3'd5)&&(!DEVICETYPE || (DEVICETYPE && finishRx &&gotoRx== recoveryRcvrLock)))
             begin
-                directed_speed_change = 1'b1;
-                trainToGen = 3'd5;
+                // BUGFIX-017c: directed_speed_change/trainToGen were latch-
+                // inferred combinational outputs; they are now registered via
+                // these write flags (see clocked block, BUGFIX-011/017b).
+                dscSet = 1'b1;
+                trainToGenNext = 3'd5; trainSpeedSet = 1'b1;
                 {substateTxnext,substateRxnext}= {recoveryRcvrLock,recoveryRcvrLock};
             end   
                 
@@ -443,7 +605,7 @@ end
                     if((finishRx&&gotoRx==recoverywait))
                     begin
                         {substateTxnext,substateRxnext}= {recoverywait,recoverywait};
-                        directed_speed_change = 1'b0;
+                        dscClr = 1'b1; // BUGFIX-017c: registered clear (was latch)
                     end                       
 
                 end
@@ -452,8 +614,11 @@ end
                     if((finishTx&&gotoTx==recoverySpeedeieos))
                     begin
                         {substateTxnext,substateRxnext}= {recoverySpeedeieos,recoverySpeedeieos};
-                        GEN = trainToGen;
-                        directed_speed_change = 1'b0;
+                        // BUGFIX-011: GEN was driven combinationally here AND
+                        // by the async-reset sequential block below (multiple
+                        // driver). The update is now registered via genWrite.
+                        genWrite = 1'b1;
+                        dscClr = 1'b1; // BUGFIX-017c: registered clear (was latch)
                     end                       
 
                 end
@@ -474,26 +639,32 @@ end
                 begin
                     //disableScrambler = 1'b0;
                     //mapping tx preset to coeff.
-                    GetLocalPresetCoeffcients={16{1'b1}};
-				    for(i=0;i<16;i=i+1)
+                    // BUGFIX-017d: GetLocalPresetCoeffcients/LocalPresetIndex/
+                    // coefficient registers were latch-inferred combinational
+                    // outputs. eqPhase0 enables their registered update in the
+                    // clocked block below; handshaking semantics are preserved
+                    // (request asserted for the whole phase0 substate,
+                    // coefficients captured while LocalTxCoefficientsValid).
+                    eqPhase0 = 1'b1;
+                    for(i=0;i<16;i=i+1)
                     begin
                         if(DEVICETYPE)
-					        LocalPresetIndex[(4*16-4)-i*4+:4]=TransmitterPresetHintUSP[4*i+:4];
+					        LocalPresetIndex_c[(4*16-4)-i*4+:4]=TransmitterPresetHintUSP[4*i+:4];
                         else
-                            LocalPresetIndex[(4*16-4)-i*4+:4]=TransmitterPresetHintDSP[4*i+:4];
+                            LocalPresetIndex_c[(4*16-4)-i*4+:4]=TransmitterPresetHintDSP[4*i+:4];
 				    end
 
                     if(LocalTxCoefficientsValid=={16{1'b1}})
                     begin
                         for(i=0;i<16;i=i+1)
                         begin
-                            PreCursorCoff[6*i+:6] =LocalTxPresetCoefficients[(18*16-18)-18*i+:6];//[23:18][5:0]       [35:0][17:0]
-                            CursorCoff[6*i+:6]    =LocalTxPresetCoefficients[(18*16-18)-18*i+6+:6];//[29:24][11:6]
-                            PostCursorCoff[6*i+:6]=LocalTxPresetCoefficients[(18*16-18)-18*i+12+:6];//[35:30][17:12]
-                            LF_register[6*i+:6] = LocalLF[(6*LANESNUMBER-6)-6*i+:6];
-                            FS_register[6*i+:6] = LocalFS[(6*LANESNUMBER-6)-6*i+:6];
+                            PreCursorCoff_c[6*i+:6] =LocalTxPresetCoefficients[(18*16-18)-18*i+:6];//[23:18][5:0]       [35:0][17:0]
+                            CursorCoff_c[6*i+:6]    =LocalTxPresetCoefficients[(18*16-18)-18*i+6+:6];//[29:24][11:6]
+                            PostCursorCoff_c[6*i+:6]=LocalTxPresetCoefficients[(18*16-18)-18*i+12+:6];//[35:30][17:12]
+                            LF_register_c[6*i+:6] = LocalLF[(6*LANESNUMBER-6)-6*i+:6];
+                            FS_register_c[6*i+:6] = LocalFS[(6*LANESNUMBER-6)-6*i+:6];
 					    end
-                        TxDeemph =  LocalTxPresetCoefficients; //use received coeff.
+                        TxDeemph_c =  LocalTxPresetCoefficients; //use received coeff.
                     end
 
                     if(finishRx && gotoRx == phase1)
@@ -502,8 +673,11 @@ end
                 {phase1,phase1}:
                 begin
                     //disableScrambler = 1'b0;
-                    LF = LocalLF;
-                    FS = LocalFS;
+                    // BUGFIX-017d: LF/FS were latch-inferred combinational
+                    // outputs; eqPhase1 enables their registered update.
+                    eqPhase1 = 1'b1;
+                    LF_c = LocalLF;
+                    FS_c = LocalFS;
                     if(finishRx && gotoRx == phase2)
                          {substateTxnext,substateRxnext}= {recoveryRcvrLock,recoveryRcvrLock};
                 end
@@ -517,8 +691,10 @@ end
            endcase
 
         end 
-        default:
-            nextState = reset_;
+        // FSM-002: the former 'default: nextState = reset_;' item was the
+        // second combinational driver of nextState; it is removed - the
+        // LPIF next-state block owns nextState and already maps unlisted
+        // currentState encodings to reset_ via its own default.
        endcase 
         
     end
@@ -574,4 +750,20 @@ end
     assign{numberOfDetectedLanesOut,linkNumberOutTx,linkNumberOutRx,rateIdOut,upConfigureCapabilityOut} = {numberOfDetectedLanes,linkNumber
     ,linkNumber,rateId,upConfigureCapability};
     
+
+// BUGFIX-044: RxEqEval and InvalidRequest were declared as output regs but
+// never assigned anywhere, leaving the two 16-bit PIPE RX-equalization
+// handshake outputs floating (X in simulation, undriven nets in synthesis).
+// Root cause: ports reserved for RX-directed equalization that the current
+// implementation (TX-directed phase0..phase3) never drives. Fix: drive them
+// to a defined constant 0 - no RX-directed EQ request, no invalid-request
+// indication - which matches the implemented feature set. If RX-directed
+// equalization is added later, these drivers must be replaced.
+// Verified by: yosys check -noinit (no undriven-output warnings).
+always @(*)
+begin
+    RxEqEval = 16'b0;
+    InvalidRequest = 16'b0;
+end
+
 endmodule

@@ -113,7 +113,11 @@ always @(*)begin
    else
    begin
 	   //$display("If eq = 0"); 
-	temp1_comb={no_of_lanes{8'h4A}};
+	// BUGFIX-028 (GitHub issue #76): when EQ==0, TS1 symbol6 must be PAD
+	// (8'h45) - 8'h4A (D10.2) is a reserved value. Root cause: wrong
+	// constant. Fix: 8'h4A -> 8'h45 per PCIe Base Spec Table 4-2.
+	// Verified by: tb/regress/tb_os_generator.v.
+	temp1_comb={no_of_lanes{8'h45}};
    end
    
 	
@@ -136,10 +140,15 @@ always @(*)begin
    temp2_comb[127:120]={EQ,tx_preset_comb[63:60],rx_preset_comb[47:45]};
    end
    else 
-	temp2_comb={no_of_lanes{8'h4A}};
+	// BUGFIX-028 (GitHub issue #76): same fix for TS2 symbol6 - PAD is
+	// 8'h45, not 8'h4A. Root cause/fix/verification as above.
+	temp2_comb={no_of_lanes{8'h45}};
   end
   else if (gen==3'b011 || gen== 3'b100 || gen==3'b101) begin
-$display("second condition"); 	   
+   // SIM-002: removed '$display("second condition");' - a $display inside
+   // synthesizable RTL is not synthesizable and spams the simulation log on
+   // every evaluation. Root cause: leftover debug statement. Fix: removed;
+   // behavior unchanged. Verified by: grep finds no active $display here.
    tx_preset_comb=tx_preset;
    use_preset_coeff_comb=use_preset_coeff;
    FS_comb=FS;
@@ -326,7 +335,9 @@ always@(posedge pclk,negedge reset_n) begin
    else
      TS1[47:40] <= 8'b00000000;
 	
-   TS1[127:56] <= 72'h4A4A4A4A4A4A4A4A4A;
+   // BUGFIX-028 (GitHub issue #76): TS1 symbols 6..15 are PAD (8'h45);
+   // 8'h4A is reserved. Root cause/fix as above.
+   TS1[127:56] <= 72'h454545454545454545;
    
    TS2[7:0] <= 8'hBC;
    if (link_number==8'b00000000)
@@ -420,7 +431,9 @@ always@(posedge pclk,negedge reset_n) begin
 	 
    else
      TS1[47:40] <= 8'b00000000;
-   TS1[55:48]<=8'h4A;
+   // BUGFIX-028 (GitHub issue #76): Gen3 TS1 symbols 10..15 are PAD
+   // (8'h45), not 8'h4A. Root cause/fix as above.
+   TS1[55:48]<=8'h45;
    
    TS2[7:0]<=8'h2D;
    if (link_number==8'b00000000)
@@ -1257,7 +1270,12 @@ always@(posedge pclk,negedge reset_n) begin
 			    end
 			
 				 
-			   else if (count==00100)begin
+			   // BUGFIX-038: 'count==00100'/'count==01000' were unsized DECIMAL
+   // literals (values 100 and 1000), which a 5-bit counter can never
+   // equal - the 4-lane and 8-lane width branches were dead code.
+   // Root cause: missing 5'b base specifier. Fix: sized binary literals
+   // matching the sibling comparisons. Verified by: elaboration + review.
+   else if (count==5'b00100)begin
 			     Os_Out <= {{no_of_lanes{TS2[31:24]}},{32'hF7F7F7F7},{no_of_lanes{TS2[15:8]}},{no_of_lanes{TS2[7:0]}}};
 				 if (TS2[15:8] == 8'hF7)
                    DataK <={{no_of_lanes{D}},{no_of_lanes{K}},{no_of_lanes{K}},{no_of_lanes{K}}};  
@@ -1266,7 +1284,8 @@ always@(posedge pclk,negedge reset_n) begin
 			    end
 				
 				 
-			   else if (count==01000)begin
+			   // BUGFIX-038 (continued): same unsized-decimal fix for the 8-lane case.
+   else if (count==5'b01000)begin
 			     Os_Out <= {{no_of_lanes{TS2[31:24]}},{64'hF7F7F7F7F7F7F7F7},{no_of_lanes{TS2[15:8]}},{no_of_lanes{TS2[7:0]}}};
 				 if (TS2[15:8] == 8'hF7)
                    DataK <={{no_of_lanes{D}},{no_of_lanes{K}},{no_of_lanes{K}},{no_of_lanes{K}}};  
