@@ -1,0 +1,36 @@
+# transcript error: error writing "stdout": broken pipe
+    while executing
+"puts -nonewline stdout $s"
+# transcript error: error writing "stdout": broken pipe
+    while executing
+"puts -nonewline stdout $s"
+# Current time Thu Sep 17 15:21:06 2026
+# Program = vish
+# Id = "10.4e"
+# Version = "2016.04"
+# Date = "Apr  9 2016"
+# Platform = win64
+
+Exception c0000005 has occurred at address 1008669c. Traceback:
+# 0    0x1008669c: 'Tcl_UpdateLinkedVar + 0xdbc'
+# 1    0x100867cd: 'Tcl_NewListObj + 0x6d'
+# 2    0x10011927: 'Tcl_EvalObjv + 0xa7'
+# 3    0x10012e2b: 'TclEvalObjEx + 0x15b'
+# 4    0x10012cbd: 'Tcl_EvalObjEx + 0x1d'
+# 5    0x400929a6: '<unknown (@0x400929a6)>'
+# 6    0x400964a6: '<unknown (@0x400964a6)>'
+# 7    0x4009654c: '<unknown (@0x4009654c)>'
+# 8    0x400967db: '<unknown (@0x400967db)>'
+# 9    0x40096b58: '<unknown (@0x40096b58)>'
+# 10   0x100b9a1c: 'TclServiceIdle + 0x6c'
+# 11   0x100954c1: 'Tcl_DoOneEvent + 0x181'
+# 12   0x102e21a5: 'Tk_MainLoop + 0x25'
+# 13   0x102ae12b: 'Tk_MainEx + 0x91b'
+# 14   0x400e298b: 'Mtirpc_Init + 0x22c1b'
+# 15   0x400e4a0a: 'Mtirpc_Init + 0x24c9a'
+# 16   0x405bf392: 'Tclsqlite3_SafeUnload + 0xb3492'
+# 17   0xb4b7e8d7: 'BaseThreadInitThunk + 0x17'
+# 18   0xb62cc3fc: 'RtlUserThreadStart + 0x2c'
+StackWalk failed 0
+# End of Stack Trace
+

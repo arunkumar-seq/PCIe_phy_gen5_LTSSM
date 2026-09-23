@@ -1,0 +1,96 @@
+# vsim -c -do "run -all; quit -f;" hvl_top hdl_top "+UVM_NO_RELNOTES" "+UVM_TESTNAME=pcie_test" "+VSEQ=dummy_vseq" -suppress 8887 
+# Start time: 19:42:35 on Sep 16,2026
+# ** Note: (vsim-8009) Loading existing optimized design _opt3
+# 
+# //  Questa Sim-64
+# //  Version 10.4e win64 Apr  9 2016
+# //
+# //  Copyright 1991-2016 Mentor Graphics Corporation
+# //  All Rights Reserved.
+# //
+# //  THIS WORK CONTAINS TRADE SECRET AND PROPRIETARY INFORMATION
+# //  WHICH IS THE PROPERTY OF MENTOR GRAPHICS CORPORATION OR ITS
+# //  LICENSORS AND IS SUBJECT TO LICENSE TERMS.
+# //  THIS DOCUMENT CONTAINS TRADE SECRETS AND COMMERCIAL OR FINANCIAL
+# //  INFORMATION THAT ARE PRIVILEGED, CONFIDENTIAL, AND EXEMPT FROM
+# //  DISCLOSURE UNDER THE FREEDOM OF INFORMATION ACT, 5 U.S.C. SECTION 552.
+# //  FURTHERMORE, THIS INFORMATION IS PROHIBITED FROM DISCLOSURE UNDER
+# //  THE TRADE SECRETS ACT, 18 U.S.C. SECTION 1905.
+# //
+# Loading sv_std.std
+# Loading work.common_pkg(fast)
+# Loading mtiUvm.uvm_pkg
+# Loading work.pipe_agent_pkg(fast)
+# Loading work.lpif_agent_pkg(fast)
+# Loading work.pcie_seq_pkg(fast)
+# Loading work.pcie_env_pkg(fast)
+# Loading work.utility_pkg(fast)
+# Loading work.pcie_test_pkg(fast)
+# Loading work.hvl_top(fast)
+# Loading work.hdl_top(fast)
+# Loading work.lpif_driver_bfm(fast__1)
+# Loading work.lpif_monitor_bfm(fast__1)
+# Loading work.pipe_driver_bfm(fast__1)
+# Loading work.pipe_monitor_bfm(fast__1)
+# Loading work.PCIe(fast)
+# Loading work.Descrambler(fast)
+# Loading work.osChecker(fast)
+# Loading work.Scrambler(fast)
+# Loading mtiUvm.questa_uvm_pkg(fast)
+# Loading work.lpif_driver_bfm(fast)
+# Loading work.lpif_monitor_bfm(fast)
+# Loading work.pipe_driver_bfm(fast)
+# Loading work.pipe_monitor_bfm(fast)
+# Loading C:/questasim64_10.4e/uvm-1.1d\win64\uvm_dpi.dll
+# run -all
+# ----------------------------------------------------------------
+# UVM-1.1d
+# (C) 2007-2013 Mentor Graphics Corporation
+# (C) 2007-2013 Cadence Design Systems, Inc.
+# (C) 2006-2013 Synopsys, Inc.
+# (C) 2011-2013 Cypress Semiconductor Corp.
+# ----------------------------------------------------------------
+# UVM_INFO verilog_src/questa_uvm_pkg-1.2/src/questa_uvm_pkg.sv(215) @ 0: reporter [Questa UVM] QUESTA_UVM-1.2.3
+# UVM_INFO verilog_src/questa_uvm_pkg-1.2/src/questa_uvm_pkg.sv(217) @ 0: reporter [Questa UVM]  questa_uvm::init(+struct)
+# UVM_INFO @ 0: reporter [RNTST] Running test pcie_test...
+# UVM_INFO @ 0: reporter [hdl_top] DEVICETYPE (0)
+# UVM_INFO ..\test\pcie_test.svh(43) @ 0: uvm_test_top [uvm_test_top] Enter build_phase in pcie_teset
+# UVM_INFO ..\test\pcie_test.svh(66) @ 0: uvm_test_top [uvm_test_top] Exit build_phase in pcie_teset
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h [pcie_env_h] Enter pcie_env build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h [pcie_env_h] Exit pcie_env build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h [lpif_agent] building lpif agent
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_coverage_monitor_h [lpif_coverage_monitor_h] Enter lpif_coverage_monitor build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_coverage_monitor_h [lpif_coverage_monitor_h] Exit lpif_coverage_monitor build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_driver_h [lpif_driver_h] Enter lpif_driver build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_driver_h [lpif_driver_h] Exit lpif_driver build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_monitor_h [lpif_monitor] building lpif monitor
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_monitor_h [lpif_monitor] lpif monitor built
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pcie_coverage_monitor_h [pcie_coverage_monitor_h] Enter pcie_coverage_monitor build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pcie_coverage_monitor_h [pcie_coverage_monitor_h] Exit pcie_coverage_monitor build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h [pipe_agent_h] Building pipe agent
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h.pipe_coverage_monitor_h [pipe_coverage_monitor_h] Enter pipe_coverage_monitor build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h.pipe_coverage_monitor_h [pipe_coverage_monitor_h] Exit pipe_coverage_monitor build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h.pipe_driver [pipe_driver] Enter pipe_driver build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h.pipe_driver [pipe_driver] Exit pipe_driver build_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_driver_h [lpif_driver_h] Enter lpif_driver connect_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_driver_h [lpif_driver_h] Exit lpif_driver connect_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_monitor_h [lpif_monitor] connecting lpif monitor
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_monitor_h [lpif_monitor] lpif monitor connected
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h.pipe_driver [pipe_driver] Enter pipe_driver connect_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h.pipe_driver [pipe_driver] Exit pipe_driver connect_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h [pipe_agent_h] Pipe agent connect phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h [pipe_agent_h] Connect phase of pipe agent finished
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h [pcie_env_h] Enter pcie_env connect_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h [pcie_env_h] Exit pcie_env connect_phase
+# UVM_INFO ..\test\pcie_test.svh(83) @ 0: uvm_test_top [uvm_test_top] Enter run_phase in pcie_teset
+# UVM_INFO ..\test\pcie_test.svh(93) @ 0: uvm_test_top [uvm_test_top] starting vseq:dummy_vseq
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.pipe_agent_h.pipe_driver [pipe_driver] Enter pipe_driver run_phase
+# UVM_INFO @ 0: uvm_test_top.pcie_env_h.lpif_agent_h.lpif_driver_h [lpif_driver_h] Enter lpif_driver run_phase
+# UVM_INFO ..\sequences\dummy_vseq.svh(18) @ 0: reporter@@dummy_vseq [dummy_vseq] Started dummy_vseq
+# UVM_INFO ..\sequences\pipe_dummy_seq.svh(16) @ 0: uvm_test_top.pcie_env_h.pipe_agent_h.pipe_sequencer_h@@dummy_vseq.pipe_dummy_seq_h [pipe_dummy_seq_h] Started pipe_dummy_seq
+# Break key hit
+# Break at ../agents/pipe_agent/pipe_driver_bfm.sv line 800
+# Stopped at ../agents/pipe_agent/pipe_driver_bfm.sv line 800
+#  quit -f
+# End time: 19:46:57 on Sep 16,2026, Elapsed time: 0:04:22
+# Errors: 0, Warnings: 0
