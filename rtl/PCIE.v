@@ -235,6 +235,9 @@ rx
 .upConfigureCapability(upConfigureCapability),
 .finish( RXfinish),
 .exitTo(RXexitTo),
+// BUGFIX-055: drive RX's restored linkUp input from the real link-up status.
+// pl_linkUp is mainLTSSM's linkUp output (maintlssm.v:68), wired at line ~154.
+.linkUp(pl_linkUp),
 .witeUpconfigureCapability(witeUpconfigureCapability),
 .writerateid(writerateid),
 .linkNumberOut(linkNumberRxOutput),

@@ -44,6 +44,14 @@ Rules that were applied throughout:
 | `FSM-006` | `rtl/maintlssm.v:91` | `txPollingDone` / `rxPollingDone` made **sticky** so the Polling handshake cannot be lost between the two sides. | Race / handshake loss |
 | `FSM-007` | `rtl/LMC.v:45` | Async-reset branch hoisted to the top of the process and made mutually exclusive with the functional logic. | Synthesis blocker (PROC_DFF) |
 | `SIM-015` | `rtl/Timer.v:63` | **Opt-in** `SIM_TIMER_PRESCALE` macro divides every timeout by 2^N. Not defined by default ⇒ zero effect on netlist and on normal simulation. | Sim productivity only |
+| `BUGFIX-048` | `rtl/osDecoder.v:232` | Non-constant `for` loop bound `128<<numberOfShifts` replaced by the constant maximum plus a guard that preserves the exact original trip count. **This was the read-time synthesis blocker for the whole closure.** | Synthesis blocker |
+| `BUGFIX-049` | `rtl/osDecoder.v:262` | `always@(out)` → `always@(*)`. The block also reads `numberOfShifts`, `numberOfDetectedLanes`, `lane_iter`, `index_iter`, so simulation and synthesis disagreed. | Sim ≠ synthesis |
+| `BUGFIX-050` | `rtl/osDecoder.v:264`, `:85` | `lane_iter`/`index_iter` initialized at block entry and removed from the clocked reset. They were driven by **two processes** and were never initialized, giving combinational feedback. | Multiple driver + feedback |
+| `BUGFIX-051` | `rtl/osDecoder.v:196`, `:213` | Added the missing `default` to the `numberOfDetectedLanes` and `gen` cases. Both inferred latches; a stale `numberOfShifts` of 5/6/7 made the loop bound 4096/8192/16384 and read past the end of the 2048-bit `out`. | Inferred latch + OOB read |
+| `BUGFIX-052` | `rtl/osDecoder.v:266` | `outOs` cleared at block entry. Only `128<<numberOfShifts` of its 2048 bits were ever written, so unused lane regions held stale ordered-set data and inferred a 2048-bit latch. | Inferred latch + stale data |
+| `BUGFIX-053` | `rtl/LMC.v:27` | Added the missing final `else` and switched `always@(generation)` → `always@(*)`, removing the `pipe_width` latch. Matches the convention the same author already used in `rtl/DataHandling.v:9,111`. | Inferred latch — **A/B verified** |
+| `BUGFIX-054` | `rtl/osDecoder.v:113` | `valid` had **two conflicting drivers** — clocked (`valid <= validnext`) and combinational (`{out,valid} = {data,1'b1}`). Now drives `validnext` only. | Multiple driver / race — **A/B verified** |
+| `BUGFIX-055` | `rtl/Modules Integration.v:30`, `rtl/PCIE.v:237` | `RX.linkUp` was an **implicit wire with no driver** — consumed by `osDecoder` and `packet_identifier` but never declared as a port. Restored as `input linkUp`, driven from `pl_linkUp`. | Undriven X — **A/B verified** |
 
 ### 2.2 RTL testbenches (`rtl/*_tb.v`, `rtl/tb.v`, `rtl/tx_test.v`) — simulation only
 
@@ -243,48 +251,134 @@ Related widths, for reference:
 
 ---
 
-## 5. Found but **NOT** changed — needs your decision
+## 5. Deeper findings — what was fixed, and what still needs a decision
 
-### 5.1 `rtl/osDecoder.v:181` — non-constant `for` loop bound (**synthesis blocker**)
+Items 5.1 and 5.2 were reported as "found but not changed" in the first pass of
+this audit because they needed a design decision. **That decision was given, and
+both are now fixed** (`BUGFIX-048`…`BUGFIX-053`). What remains open is 5.3, plus a
+newly discovered structural limit inside `osDecoder` described at the end of 5.1.
+
+### 5.1 `rtl/osDecoder.v` — non-constant `for` loop bound (**was** the closure's synthesis blocker) — FIXED
+
+The original code was
 
 ```verilog
-for (j = 0; j < 128<<numberOfShifts; j = j+8)
+always@(out)
+    for (j = 0; j < 128<<numberOfShifts; j = j+8)
+        outOs[(lanesOffsets[11*lane_iter +: 11]+index_iter)+:8] = out[j+:8];
 ```
 
-`numberOfShifts` is a `reg`, i.e. a runtime value, so the loop bound is not a
-constant. yosys refuses to read the file at all:
+`numberOfShifts` is a `reg`, so the bound was a runtime value. Hardware can only be
+built from such a loop by unrolling it, which needs a constant trip count, so yosys
+refused to read the file at all:
 
 ```
 osDecoder.v:181: ERROR: 2nd expression of procedural for-loop is not constant!
 ```
 
-Any commercial synthesis tool will reject this too. **`osDecoder` is in the
-closure** — `RX` instantiates it at `rtl/Modules Integration.v:107` — so this
-blocks synthesis of the whole design, not just one leaf.
+Because `RX` instantiates `osDecoder` (`rtl/Modules Integration.v:107`), this blocked
+synthesis of the **entire closure**, not just this leaf.
 
-A second problem in the same file: `always @(out)` has an **incomplete sensitivity
-list** — the block also reads `numberOfShifts`, `lanesOffsets`, `lane_iter` and
-`index_iter`. In simulation this produces stale values; in synthesis the tool
-ignores the list entirely, so **sim and silicon would differ**.
+**`BUGFIX-048`** loops to the constant maximum and gates the body on the original
+bound. That is exactly equivalent, because `numberOfShifts` can only be 0…4:
 
-**Why I did not fix it:** the obvious fix (replace the bound with a constant upper
-bound and guard the body) is **behaviour-affecting** — it changes how many shift
-iterations execute for a given `numberOfShifts`. That is a design decision, not a
-cleanup, and your rules say minimal root-cause fixes with no architecture
-changes. **This needs your sign-off.** No change-ID has been allocated to it yet;
-the next free ID is `BUGFIX-048`.
+| lanes | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| `numberOfShifts` | 0 | 1 | 2 | 3 | 4 |
+| `128<<numberOfShifts` | 128 | 256 | 512 | 1024 | **2048** |
+| iterations (`bound/8`) | 16 | 32 | 64 | 128 | **256** |
 
-> Because of this file, every yosys run in §6 works on a **throwaway copy** in
-> `/tmp` with that one bound replaced by a constant. **Your repository file is
-> untouched.** Read the osDecoder/RX rows as "clean apart from the known
-> non-constant loop bound".
+The maximum is 2048, which is also exactly the width of `out` — so 2048 is both the
+largest legal bound and the largest *meaningful* one (`out[j+:8]` is in range only
+for `j <= 2040`). Iterating `j = 0,8,…,2040` and executing the body only while
+`j < (128<<numberOfShifts)` performs the same iterations, in the same order, with the
+same values.
 
-### 5.2 `rtl/LMC.v` — `pipe_width` latch (pre-existing)
+Fixing that one line exposed four further defects in the same block, all fixed too:
 
-yosys infers a latch for `pipe_width`. This is **pre-existing**, not introduced by
-`FSM-007`, and `FSM-007` deliberately did not touch it: giving `pipe_width` a
-default in the `GEN` case would change link-width behaviour. Flagging it for your
-review; next free ID `BUGFIX-048`/`WIDTH-002`.
+| ID | Defect | Why it mattered |
+|---|---|---|
+| `BUGFIX-049` | `always@(out)` read `numberOfShifts`, `numberOfDetectedLanes`, `lane_iter`, `index_iter` but was sensitive only to `out` | Synthesis ignores hand-written sensitivity lists, so **simulation and synthesis disagreed** — a changed lane count with a stable `out` left `outOs` stale in sim but not in silicon |
+| `BUGFIX-050` | `lane_iter`/`index_iter` were never initialized at block entry **and** were also driven from the clocked reset branch | Two processes driving one `reg` (clocked + combinational) is a multiple-driver conflict, and the block had combinational feedback through values it was supposed to compute from scratch |
+| `BUGFIX-051` | No `default` in the `numberOfDetectedLanes` or `gen` cases | Inferred latches. A stale `numberOfShifts` of 5/6/7 made the old bound 4096/8192/16384 — **reading past the end of the 2048-bit `out`** |
+| `BUGFIX-052` | `outOs` only partially assigned | For fewer than 16 lanes the unused lane regions kept stale ordered-set data and inferred a 2048-bit latch |
+
+`BUGFIX-050` is worth calling out because the old code only ever *appeared* to work,
+and only by coincidence: the trip count is always `16 × numberOfDetectedLanes`, so
+after a full evaluation `lane_iter` wrapped back to 0 and `index_iter` reached 128
+and wrapped to 0 in its 7 bits. That coincidence holds **only** for lane counts in
+{1,2,4,8,16} — precisely the counts `BUGFIX-051` now has to default. For any other
+count the iterators never returned to zero and every later de-interleave was written
+to the wrong lanes.
+
+**Verified (executed in sandbox):**
+
+| yosys pass | Before | After |
+|---|---|---|
+| `read_verilog` | **ERROR** at line 181, aborts in 1.2 s | **SUCCESS** in 5.6 s |
+| `+ hierarchy -top osDecoder` | never reached | SUCCESS, 5.7 s |
+| `+ proc_clean … proc_arst` | never reached | SUCCESS, 14.2 s, **no `Multiple edge sensitive events`** |
+| `+ proc_mux` and beyond | never reached | **does not complete** — see below |
+| whole closure `hierarchy -top PCIe; check -noinit` | never reached (read aborted) | **completes, 605 s, 1222 problems** |
+
+#### What still does not work in `osDecoder`, and why it is not something I should change unasked
+
+`proc_mux` — the pass that converts decision trees into multiplexers — does not
+finish. I bisected it, and **it is not caused by any of the fixes above**:
+
+| Experiment (throwaway copies in `/tmp`, repo untouched) | Result |
+|---|---|
+| Replace the whole de-interleave block with `outOs = out` | still does not complete |
+| Hoist the loop-invariant `orderedSets\|(data)<<capacity` out of both 64-iteration loops (it is replicated 128× by unrolling — ≈3.1 M muxes) | still does not complete |
+| `read_verilog` alone | **completes in 2–6 s** |
+| A trivial control module through the identical flow | completes, 0 problems |
+
+So the file is now *legal* and elaborates; the cost is in lowering the pre-existing
+2048-bit datapath in the **first** `always@(*)` block (the ordered-set accumulator),
+which uses variable-indexed writes into 2048-bit vectors and 2048-bit results
+shifted by a 12-bit `capacity`. That block was not touched by this pass.
+
+Making it synthesize efficiently means restructuring the datapath — e.g. a
+`generate`-based per-lane slice, or an explicit byte permutation. The mapping is a
+pure permutation (`out` byte *k* → `outOs` byte `16·(k mod N) + (k div N)`, with
+`N = numberOfDetectedLanes`), so it is very expressible in hardware — but writing it
+that way **is an architecture change**, which your rules put off limits without your
+sign-off. **This is the one remaining `osDecoder` decision I need from you.**
+
+### 5.2 `rtl/LMC.v` — `pipe_width` latch — FIXED and A/B verified
+
+`BUGFIX-053`. `generation` is `input [2:0]`, so 0, 6 and 7 are reachable, but the
+chain covered only 1…5 with no final `else`, so `pipe_width` held its previous value:
+a latch. The block was also `always@(generation)` while reading `pipe_width`.
+
+The fix is three lines and is **not an invention** — it matches the convention the
+same author already used in the RX-side twin of this logic, `rtl/DataHandling.v:9`
+(`always@*`) and `:107-111` (final `else` with `pipeWidth = 0;`). `LMC.v` was simply
+the odd one out, which is exactly why only it inferred the latch.
+
+`0` is the safe default here: `pipe_width` is used in `LMC.v` **only** in equality
+comparisons (`pipe_width == 8/16/32 && …`, from line ~551 on) — never as a divisor,
+shift amount or array index (verified by grep). So 0 matches none of them, the same
+no-match sentinel `DataHandling` uses, and no handled generation changes behaviour.
+
+**A/B verified with yosys**, before = commit `a828d38`, after = this commit, same
+command, same machine:
+
+| | Before | After |
+|---|---|---|
+| `Latch inferred for signal \LMC.\pipe_width [5:3]` | present | **gone** |
+| `Latch inferred for signal \LMC.\pipe_width [2:0]` | present | **gone** |
+| `$dlatch` cells | 1 | **0** |
+| `$adff` cells | 65 | 65 (unchanged — `FSM-007` intact) |
+| `Found and reported N problems` | 1 | 1 |
+| runtime | 15.4 s | 14.0 s |
+
+The one remaining reported problem is pre-existing and benign: `Wire LMC.count has an
+unprocessed 'init' attribute`, from `reg [4:0] count = 0;` at `rtl/LMC.v:25`. A
+declaration initializer is honoured in simulation and in FPGA bitstream init but not
+by ASIC synthesis. It is a warning, not an error, and changing it would alter the
+simulated initial value, so it was **left alone deliberately**.
+
 
 ### 5.3 `rtl/OS_GENERATOR.v` — residual `PROC_ARST` limitation
 
@@ -329,6 +423,79 @@ are still printed in full by `make lint`.
 
 ---
 
+### 5.6 Remaining closure problems after `BUGFIX-048`…`055` — **needs decisions, not applied**
+
+`BUGFIX-048` made the whole closure checkable for the first time (previously every
+module aborted at `read_verilog` on `osDecoder.v:181`). Running
+`hierarchy -top PCIe; check -noinit` over all 46 synthesizable files now completes
+in ~605 s and reports **1222 problems**, down from 1224. The two that
+`BUGFIX-054`/`055` targeted are confirmed gone by A/B comparison of the two runs.
+
+What is left, grouped by what a decision would require:
+
+**(a) `InsertBlockToken_G3` — 6 signals with multiple conflicting drivers (400 bits)**
+
+`DK`, `END_reg`, `SDB_reg`, `STB_reg`, `valid_reg` (80 bits each) and `NoMoreData`.
+These are written by the 77 `` `en(i) `` macro expansions, which all live inside one
+process — and that process is
+
+```verilog
+always @(negedge clk) begin        // rtl/InsertBlockToken_G3.v:456
+```
+
+**This is the most important new finding in this document.** The rest of the design,
+and `InsertBlockToken_G3.v` itself (line 290), clock on `posedge clk`. Its twin file
+`rtl/Insert_token_block.v` has no `negedge` block at all — every one of its six
+processes is `posedge` or `@*`. So a whole datapath block here updates on the
+**opposite clock edge** from its twin and from the rest of the design, a half-cycle
+offset that also explains the driver conflicts.
+
+Two further defects in the same region:
+
+- `` `en(i) `` and `` `co(a) `` expand to `data_reg[8*i-1:0]` and
+  `data_reg[632-1:8*i]`. At the boundary indices these are **out-of-bounds part
+  selects** — at `i=0`, `data_reg[-1:0]`. yosys sets those bits to `undef`, which is
+  X-injection into the datapath. This is the source of ~8,946 of the warnings
+  (`InsertBlockToken_G3.v:371` ≈6,706 and `Insert_token_block.v:462` ≈2,240).
+- Both files use **non-blocking `<=` inside `always @ *`** blocks
+  (`InsertBlockToken_G3.v:371,374`, `Insert_token_block.v:462`).
+
+**Why this was not fixed.** Deciding it means choosing which clock edge is correct
+and which process should own each of the six registers — i.e. establishing design
+intent for ~700 lines of macro-generated datapath across two files, with no way to
+verify the result in simulation here. Getting it wrong would silently corrupt the
+Gen3 token-insertion path. `negedge` → `posedge` at line 456 is *probably* the single
+highest-value one-word fix in the repository, but it is exactly the kind of change
+that should not be made on inference. **Your call.** Next free ID `BUGFIX-056`.
+
+**(b) `RX.PIPEWIDTH` — 6 bits with multiple conflicting drivers**
+
+Not yet root-caused. `PIPEWIDTH` inside `RX` is fed by `LMC_RX` (via
+`DataHandling`), so a second driver exists somewhere in `rtl/Modules Integration.v`.
+Needs the same treatment as `BUGFIX-055`. Not applied.
+
+**(c) Three undriven `PCIe` top-level signals**
+
+`PclkChangeAck`, `directed_speed_change_In`, `write_directed_speed_change`. The
+first is consistent with `SIM-014`'s finding that the PCLK-change handshake is not
+implemented in this design. The other two are inputs the LTSSM expects but nothing
+drives. Whether to implement, tie off, or remove them is a design decision. Not
+applied.
+
+**(d) `RX_TB_Integration` is dead code with a latent elaboration error**
+
+`rtl/Modules Integration.v:193`. It is **never instantiated anywhere** in `rtl/` or
+`tb/`, which is why slang does not elaborate it (it is absent from the 11 elaborated
+tops) and why QuestaSim never reported it — `vlog` compiles it, but nothing
+elaborates it unless it is a simulation top. Had it been elaborated it would fail:
+its `RX` instance at line 238 uses **positional** connections and passes **32
+arguments to a 50-port module**, with an extra `pl_state_sts` at position 23 that
+shifts everything after it. Its `linkUp` at position 29 is what revealed the missing
+port fixed by `BUGFIX-055`. Repairing it means converting to named connections and
+supplying 18 missing arguments. Not applied; flagging so you know it is unusable
+as-is. Next free ID `SIM-016`.
+
+
 ## 6. Verification status
 
 ### 6.1 slang elaboration gate — **VERIFIED (executed in sandbox)**
@@ -341,7 +508,7 @@ python3 tools_check/slang_check.py --rtl-dir rtl --show 30
 |---|---|
 | Files parsed | 55 |
 | **Errors** | **0** |
-| Warnings | 1311 (was 1308 before `SIM-013` added an 11th elaborable bench) |
+| Warnings | **1310** (1311 before `BUGFIX-049` removed the incomplete-sensitivity warning; 1308 before `SIM-013` added an 11th elaborable bench) |
 | Elaborated top-level instances | **11** (was 10 before `SIM-013`) |
 
 The 11 elaborated tops cover the full closure plus the standalone benches.
@@ -355,56 +522,69 @@ python3 tools_check/slang_check.py --rtl-dir rtl                                
 So the `ifdef` is syntactically clean whether or not the macro is defined, and the
 default build is provably unaffected.
 
-### 6.2 yosys synthesis check — **PARTIALLY VERIFIED (executed in sandbox)**
+### 6.2 yosys synthesis check — **VERIFIED for leaf modules; NOT obtained for the whole closure**
 
-See §7 for the exact command and the live result. Summary of what was established:
+An important methodological correction to the first pass of this audit. The earlier
+"~25 minutes of CPU, killed" measurements were for runs that elaborate the **whole
+closure** (`hierarchy -top PCIe`) or a large module while reading all 46 files. Once
+the sweep was narrowed to *leaf* modules read on their own, the same WASM yosys
+finishes in **seconds**. Every result below was obtained that way and is reproducible.
 
-| Module | Result | When |
-|---|---|---|
-| `mainLTSSM` | clean — 0 problems reported, 29 registers inferred | completed |
-| `LMC` | clean after `FSM-007` — 65 `$adff` inferred; `pipe_width` latch is pre-existing (§5.2) | completed |
-| `OS_GENERATOR` | `Multiple edge sensitive events` reproduced **before** `BUGFIX-047`; the post-fix confirmation run did **not** converge in the sandbox (see below) | partial |
-| `osDecoder` | blocked at read by the non-constant loop bound (§5.1) | reproduced |
-| whole closure (`PCIe`) | **not obtained** — see below | did not complete |
+| Module | Command scope | Result | Status |
+|---|---|---|---|
+| `LMC` | leaf, own file | 65 `$adff`, **0 `$dlatch`**, 1 benign pre-existing problem, 14.0 s | **completed** |
+| `LMC` (before `BUGFIX-053`) | leaf, own file, commit `a828d38` | 65 `$adff`, **1 `$dlatch`** on `pipe_width`, 15.4 s | **completed** — the A/B baseline |
+| `osDecoder` | leaf, own file, `read_verilog` | **no error**, 5.6 s | **completed** |
+| `osDecoder` | `+ hierarchy -top osDecoder` | no error, 5.7 s | **completed** |
+| `osDecoder` | `+ proc_clean … proc_arst` | no error, **no `Multiple edge sensitive events`**, 14.2 s | **completed** |
+| `osDecoder` | `+ proc_mux` and beyond | does not complete; bisected to the pre-existing 2048-bit accumulator datapath (§5.1) | **did not complete** |
+| `osDecoder` (before `BUGFIX-048`) | leaf, `read_verilog` | **`ERROR: 2nd expression of procedural for-loop is not constant!`** at line 181, aborts in 1.2 s | **completed** — the A/B baseline |
+| `mainLTSSM` | full read set | clean, 0 problems, 29 registers | completed earlier |
+| `OS_GENERATOR` | full read set | see the caveat below | **partial** |
+| whole closure (`PCIe`) | all 46 files, `read_verilog` only | **0 errors**, 34 s | **completed** |
+| whole closure (`PCIe`) | `hierarchy -top PCIe; check -noinit` | **completes**, 605 s, 1222 problems (was 1224 before `BUGFIX-054`/`055`) | **completed** |
 
-**Be precise about the `OS_GENERATOR` row.** What was actually executed and
+**The two A/B pairs are the strongest evidence in this document**, because both sides
+were executed in the same sandbox with the same command and differ only by the fix:
+
+- `osDecoder` `read_verilog`: ERROR in 1.2 s → success in 5.6 s (`BUGFIX-048`)
+- `LMC` `$dlatch` count: 1 → 0, with `$adff` unchanged at 65 (`BUGFIX-053`)
+
+**Still only reasoned, not demonstrated — `OS_GENERATOR`.** What was executed and
 observed is the *failure before the fix*: yosys aborted with `ERROR: Multiple edge
 sensitive events found for this signal!` on register `D` in the process at
-`OS_GENERATOR.v:267`. That is the evidence `BUGFIX-047` was written against, and it
-is recorded verbatim in the `BUGFIX-047` comment banner in the source. The
-*post-fix* re-run was started twice and killed both times without producing output
-— not because it reported an error, but because it did not finish. So the claim
-"the error is gone" is **reasoned from the fix's structure** (the functional branch
-is now chained onto the reset test, which is exactly the condition `PROC_ARST`
-requires, and the same restructuring cleared the identical error in `LMC.v` and
-`maintlssm.v`), **not from a completed post-fix yosys run.** Treat it as expected
-rather than demonstrated, and confirm it with your own synthesis tool.
+`OS_GENERATOR.v:267`. That is the evidence `BUGFIX-047` was written against and it is
+recorded verbatim in the source banner. The post-fix re-run was started three times
+and killed each time without producing output — not because it reported an error, but
+because `OS_GENERATOR.v` is ~86 KB containing a ~2000-line process and does not
+behave like a leaf. So "the error is gone" remains **reasoned from the fix's
+structure** (chaining the functional branch onto the reset test is exactly what
+`PROC_ARST` requires, and the identical restructuring is *demonstrated* to work in
+`LMC.v`, where 65 `$adff` cells with async reset are now inferred). Confirm it with
+your own synthesis tool.
 
-**Why the runs did not converge.** yosys was run through `@yowasp/yosys` (version
-0.69, WebAssembly) because no native licence-free synthesizer was available in the
-sandbox. WASM yosys must parse all 46 synthesizable `rtl/*.v` files — several over
-100 KB, `OS_GENERATOR.v` alone containing a ~2000-line process — before it can
-elaborate *any* top, and it does that from scratch for every module. Measured
-cost: ~25 minutes of CPU on `OS_GENERATOR` alone with no output, and ~25 minutes
-on the `hierarchy -top PCIe` step of the closure run, both killed. This is a
-**sandbox throughput limit, not a design problem.** On a native yosys build the
-same commands take seconds to minutes.
-
-Reproduce it yourself where it will actually finish:
+Reproduce any of it:
 
 ```bash
-# native yosys (recommended - seconds, not tens of minutes)
+# leaf modules - seconds, and these are the runs behind every number above
+cd /tmp && cp <repo>/rtl/LMC.v . && yosys -p \
+  'read_verilog "LMC.v"; hierarchy -top LMC; proc; opt_clean; check -noinit; stat'
+
+# the whole closure, on a native yosys build (recommended)
 yosys -p "read_verilog rtl/*.v; hierarchy -top PCIe; proc; check -noinit; stat"
 
-# or the WASM path used here, with the osDecoder.v:181 caveat from §5.1
-bash tools_check/yosys_fixed.sh OS_GENERATOR    # one module
-bash tools_check/yosys_closure.sh               # whole closure
+# the WASM path used in the sandbox
+bash tools_check/yosys_fixed.sh LMC osDecoder
 ```
 
-Note that yosys is **not** a substitute for your target synthesis tool. It is used
-here only as a licence-free structural check for the `proc`/`check` classes of
-problem: async-reset lifting, inferred latches, combinational loops, uninitialised
-state.
+Note that `tools_check/yosys_fixed.sh` still carries a **sweep-only** `/tmp` patch of
+the `osDecoder.v:181` loop bound. That patch is now **obsolete for the repository
+file** — `BUGFIX-048` fixed it properly — and is left in the script only so the
+historical baseline remains reproducible. It never modifies the repository.
+
+yosys is **not** a substitute for your target synthesis tool. It is used here only as
+a licence-free structural check for the `proc`/`check` classes of problem:
+async-reset lifting, inferred latches, combinational loops, uninitialised state.
 
 ### 6.3 QuestaSim — **NOT VERIFIED**
 
@@ -461,16 +641,46 @@ bash -n scripts/run_questa.sh tools_check/*.sh
 python3 tools_check/md2docx.py docs/RTL_CHANGELOG.md docs/RTL_CHANGELOG.docx
 ```
 
-**Started but killed — no result obtained** (all four were WASM-yosys throughput
-limit casualties, see §6.2):
+**Leaf-module yosys runs that COMPLETED** (these back every number in §6.2):
 
 ```bash
-bash tools_check/yosys_sweep.sh      # broad per-module sweep — killed, all modules
-                                     # aborted at read on osDecoder.v:181
-bash tools_check/yosys_targeted.sh   # targeted per-module sweep — killed
-bash tools_check/yosys_closure.sh    # hierarchy -top PCIe — killed at ~25 min CPU
-bash tools_check/yosys_fixed.sh OS_GENERATOR TX_LTSSM LMC mainLTSSM Timer
-                                     # killed at ~25 min CPU on OS_GENERATOR
+cd /tmp && cp <repo>/rtl/LMC.v .            # after BUGFIX-053
+yosys -p 'read_verilog "LMC.v"; hierarchy -top LMC; proc; opt_clean; check -noinit; stat'
+#   -> 65 $adff, 0 $dlatch, "Found and reported 1 problems", 14.0 s
+git show a828d38:rtl/LMC.v > LMC.v          # before BUGFIX-053, same command
+#   -> 65 $adff, 1 $dlatch, "Latch inferred for signal `\LMC.\pipe_width [5:3]'" and "[2:0]"
+
+cd /tmp && cp <repo>/rtl/osDecoder.v .      # after BUGFIX-048..052
+yosys -p 'read_verilog "osDecoder.v"'                                  # 5.6 s, no error
+yosys -p 'read_verilog "osDecoder.v"; hierarchy -top osDecoder'         # 5.7 s, no error
+yosys -p '... ; proc_clean; proc_rmdead; proc_prune; proc_init; proc_arst'  # 14.2 s, no error
+git show a828d38:rtl/osDecoder.v > osDecoder.v                          # before BUGFIX-048
+yosys -p 'read_verilog "osDecoder.v"'
+#   -> osDecoder.v:181: ERROR: 2nd expression of procedural for-loop is not constant!
+```
+
+**Started but killed — no result obtained.** All are WASM-throughput casualties on
+non-leaf scopes, not design errors (§6.2):
+
+```bash
+bash tools_check/yosys_sweep.sh      # broad per-module sweep - every module aborted
+                                     # at read on osDecoder.v:181 (before BUGFIX-048)
+bash tools_check/yosys_targeted.sh   # targeted per-module sweep - killed
+bash tools_check/yosys_closure.sh    # hierarchy -top PCIe - killed at ~25 min CPU
+bash tools_check/yosys_fixed.sh OS_GENERATOR TX_LTSSM LMC mainLTSSM Timer   # killed
+yosys -p '...; hierarchy -top osDecoder; proc; opt_clean; check; stat'      # hangs in proc_mux
+```
+
+**Bisection experiments on throwaway `/tmp` copies** (the repository was never
+modified by any of these) — used to prove the `proc_mux` hang is pre-existing and not
+caused by `BUGFIX-048`…`052`:
+
+```bash
+# de-interleave block replaced by `outOs = out`        -> still hangs
+# loop-invariant shift hoisted out of both 64x loops   -> still hangs
+# OSD_OUT_BITS reduced 2048 -> 128 (16 iterations)     -> still hangs
+# read_verilog alone                                   -> completes in 2-6 s
+# trivial control module through the identical flow     -> completes, 0 problems
 ```
 
 **Not executed anywhere:** any `vlog`, `vsim`, `vish`, `vlib`, `vmap`, `make sim`,
@@ -593,22 +803,25 @@ produces a message rather than aborting the script — but per your rules, a
 Allocated and used in this pass:
 
 ```
-BUGFIX-046  BUGFIX-047
+BUGFIX-046  BUGFIX-047  BUGFIX-048  BUGFIX-049  BUGFIX-050  BUGFIX-051
+BUGFIX-052  BUGFIX-053  BUGFIX-054  BUGFIX-055
 FSM-005     FSM-006     FSM-007
 SIM-003     SIM-004     SIM-006     SIM-007     SIM-008     SIM-009
 SIM-010     SIM-011     SIM-012     SIM-013     SIM-014     SIM-015
 WIDTH-001
 ```
 
+That is 26 IDs: 10 `BUGFIX`, 3 `FSM`, 12 `SIM`, 1 `WIDTH`.
+
 Pre-existing in the repository from earlier passes (unchanged, still present):
 `FSM-001`…`FSM-004`, `SIM-002`, and 33 `BUGFIX-nnn` IDs.
 
 The full register, verified by `grep -rnoE "(BUGFIX|FSM|SIM|WIDTH)-[0-9]{3}" rtl/
-tb/ tb_edited/` (55 distinct IDs in total):
+tb/ tb_edited/` (64 distinct IDs in total: 43 `BUGFIX`, 7 `FSM`, 13 `SIM`, 1 `WIDTH`):
 
 | Prefix | Range present | Count | Numbers that were **never allocated** |
 |---|---|---|---|
-| `BUGFIX` | 001–047 | 35 | 007, 008, 013, 019, 022, 023, 024, 025, 026, 027, 029, 032 |
+| `BUGFIX` | 001–055 | 43 | 007, 008, 013, 019, 022, 023, 024, 025, 026, 027, 029, 032 |
 | `FSM` | 001–007 | 7 | none — contiguous |
 | `SIM` | 002–015 | 13 | 001, 005 |
 | `WIDTH` | 001 | 1 | none |
@@ -617,24 +830,31 @@ Do **not** reuse a gap number: an ID that is absent from the tree is still absen
 from the history of earlier passes, and reusing one makes it impossible to tell
 which pass introduced a given comment. Allocate forward from the next free ID.
 
-**Next free IDs:** `BUGFIX-048`, `FSM-008`, `SIM-016`, `WIDTH-002`.
+**Next free IDs:** `BUGFIX-056`, `FSM-008`, `SIM-016`, `WIDTH-002`.
 
 ---
 
 ## 10. Recommended next actions, in priority order
 
 1. **Run `make sim FAST_TIMERS=1 RUN_TIME="2 ms"`** and confirm the LTSSM leaves
-   `Detect`. This is the single highest-value check and it takes minutes, not
-   hours. Then confirm §6.3 item by item.
-2. **Re-run the UVM flow** (`make uvm-build && make uvm-run`) and confirm the
-   time-0 hang is gone (`SIM-006`/`SIM-007`).
-3. **Decide on `rtl/osDecoder.v:181`** (§5.1). This is a hard synthesis blocker in
-   the closure and the only item that will stop a real synthesis run. It needs a
-   behaviour decision from you, so I did not touch it.
-4. **Decide on the `LMC.v` `pipe_width` latch** (§5.2) and the `OS_GENERATOR`
-   process split (§5.3).
+   `Detect`. Single highest-value check; minutes, not hours. Then work through
+   §6.3 item by item — none of it is verified yet.
+2. **Re-run the UVM flow** (`make uvm-build && make uvm-run`) and confirm the time-0
+   hang is gone (`SIM-006`/`SIM-007`).
+3. **Decide on the `osDecoder` datapath restructure** (§5.1, last subsection). The
+   non-constant loop bound you asked about is fixed and verified — the file now
+   reads, elaborates and lifts async resets cleanly. What remains is that
+   `proc_mux` cannot lower the pre-existing 2048-bit accumulator datapath. The
+   mapping is a pure byte permutation, so it is very expressible in hardware, but
+   rewriting it that way is an architecture change and needs your explicit go-ahead.
+4. **Decide on the `OS_GENERATOR` process split** (§5.3) — same situation: the
+   demonstrated blocker is fixed, the residual `PROC_ARST` limitation needs a split.
 5. **Decide on `SIM-012`** (`rtl/tb.v` undriven inputs) — enable the guard or not.
-6. Only after 1–2 pass: attempt a true-scale run (§8.3) to validate real timeout
+6. **Run your own synthesis tool over the closure.** Now that `osDecoder.v` reads,
+   the one command that could not be run before is possible:
+   `yosys -p "read_verilog rtl/*.v; hierarchy -top PCIe; proc; check -noinit; stat"`.
+   On a native build this should finish; in the sandbox it did not (§6.2).
+7. Only after 1–2 pass: attempt a true-scale run (§8.3) to validate real timeout
    behaviour.
 
 ---

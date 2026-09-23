@@ -24,7 +24,40 @@ output reg [1:0] LMCSyncHeader_1, LMCSyncHeader_2, LMCSyncHeader_3, LMCSyncHeade
 reg [5:0] pipe_width;
 reg [4:0] count= 0;
 
-always@(generation) begin
+  // -------------------------------------------------------------------
+  // BUGFIX-053  (LMC.v - inferred latch on pipe_width, plus an incomplete
+  //              sensitivity list on the block that drives PIPEWIDTH)
+  //
+  // Root cause : `generation` is `input [2:0]`, so 0, 6 and 7 are all
+  //              reachable, but the if/else-if chain only covered 1..5 and
+  //              had NO final else. A combinational block that does not
+  //              assign its output on every path holds the previous value,
+  //              which is a latch: yosys reports `$dlatch` for pipe_width.
+  //              The block was also declared `always@(generation)` while it
+  //              reads pipe_width as well, so the hand-written list was
+  //              incomplete.
+  //
+  // Fix        : add the missing final else and use `always@(*)`. This is
+  //              not an invention - it matches the convention the same author
+  //              already used in the RX-side twin of this logic,
+  //              rtl/DataHandling.v:9 (`always@*`) and :107-111 (final
+  //              `else` with `pipeWidth = 0;`). LMC.v was simply the odd one
+  //              out, which is why only it inferred the latch.
+  //
+  // Why 0 is the safe default here: pipe_width is used in LMC.v ONLY in
+  //              equality comparisons (`pipe_width == 8/16/32 && ...`, from
+  //              line ~551 onward). It is never a divisor, a shift amount or
+  //              an array index - verified by grep - so 0 simply matches none
+  //              of them, the same no-match sentinel DataHandling uses. No
+  //              generation this chain already handles changes behaviour.
+  //
+  // Expected   : PIPEWIDTH is a pure combinational function of `generation`;
+  //              the pipe_width latch disappears from synthesis.
+  // Verification: slang 0 errors; yosys LMC `$dlatch` count 0 after the fix
+  //              (was 1 before) - see docs/RTL_CHANGELOG.md section 5.2.
+  //              QuestaSim: NOT VERIFIED.
+  // -------------------------------------------------------------------
+always@(*) begin
     if(generation==1)
         pipe_width = pipe_width_gen1; 
     else if (generation==2)
@@ -35,6 +68,8 @@ always@(generation) begin
         pipe_width = pipe_width_gen4;                 
     else if (generation==5)
         pipe_width = pipe_width_gen5;
+    else
+        pipe_width = 6'd0;
 
     PIPEWIDTH= pipe_width; 
 end
