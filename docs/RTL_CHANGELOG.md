@@ -43,6 +43,7 @@ Rules that were applied throughout:
 | `FSM-005` | `rtl/maintlssm.v:166` | `substateTx` / `substateRx` given explicit reset values in the async reset branch. | X at reset / FSM-001 class |
 | `FSM-006` | `rtl/maintlssm.v:91` | `txPollingDone` / `rxPollingDone` made **sticky** so the Polling handshake cannot be lost between the two sides. | Race / handshake loss |
 | `FSM-007` | `rtl/LMC.v:45` | Async-reset branch hoisted to the top of the process and made mutually exclusive with the functional logic. | Synthesis blocker (PROC_DFF) |
+| `FSM-008` | `rtl/maintlssm.v:98` (decls), `:222` / `:260` (resets), `:374` (capture), `:667` (Polling.Configuration), `:707` (Config.LinkWidthAccept, upstream), `:749` (Config.Complete), `:952` (Recovery.Idle→L0) | Generic **sticky capture** of each side's `(finish, goto)` request, applied to the four transitions that demanded both sides' strobes on the *same* clock edge. Also fixes a `gotoRx`-written-twice typo. | **Race / handshake loss — the "stuck in Polling" stall** |
 | `SIM-015` | `rtl/Timer.v:63` | **Opt-in** `SIM_TIMER_PRESCALE` macro divides every timeout by 2^N. Not defined by default ⇒ zero effect on netlist and on normal simulation. | Sim productivity only |
 | `BUGFIX-048` | `rtl/osDecoder.v:232` | Non-constant `for` loop bound `128<<numberOfShifts` replaced by the constant maximum plus a guard that preserves the exact original trip count. **This was the read-time synthesis blocker for the whole closure.** | Synthesis blocker |
 | `BUGFIX-049` | `rtl/osDecoder.v:262` | `always@(out)` → `always@(*)`. The block also reads `numberOfShifts`, `numberOfDetectedLanes`, `lane_iter`, `index_iter`, so simulation and synthesis disagreed. | Sim ≠ synthesis |
@@ -90,7 +91,7 @@ Rules that were applied throughout:
 
 ---
 
-## 3. The two bugs that actually stopped your simulation
+## 3. The three bugs that actually stopped your simulation
 
 ### 3.1 `SIM-006` — the UVM hang at time 0 (**root cause of your 4m22s freeze**)
 
@@ -147,6 +148,123 @@ arithmetic; the short version is that leaving `Detect` costs ~6,000,000 cycles
 
 This was **not** (only) an RTL bug. It is a run-window problem, and it is why
 `scripts/questa_run.do` refuses to use `run -all` and why `SIM-015` exists.
+
+---
+
+### 3.3 `FSM-008` — why the LTSSM **stalled in Polling** (the bug behind "it runs, but never finishes")
+
+**Symptom.** After `SIM-006`/`SIM-007` removed the time-0 hang, the simulation
+advanced and the LTSSM trained out of `Detect`, but then **sat in Polling** and
+never reached `Configuration`, `L0`, or link-up.
+
+**Root cause — the two sides drive `finish` with different lifetimes.**
+`mainLTSSM` arbitrates between the TX and RX sub-FSMs using four wires
+(`PCIE.v:149-152`):
+
+| `mainLTSSM` name | actual net | producer | lifetime of the request |
+|---|---|---|---|
+| `finishTx` / `gotoTx` | `TXFinishFlag` / `TXExitTo` | `TxLtssm.v` | **LEVEL** — held high |
+| `finishRx` / `gotoRx` | `RXfinish` / `RXexitTo` | `Master_RX_LTSSM.v` | **ONE-CYCLE STROBE** |
+
+* On the TX side, `TxLtssm.v:140-177` computes `ExitToFlag` combinationally and
+  sets it to `1` for as long as the state condition holds
+  (`PollingConfigration && OSCount >= 16`). Registered at `TxLtssm.v:785-786`,
+  so `TXFinishFlag`/`TXExitTo` stay asserted across **many** cycles.
+* On the RX side, `FSM-003` deliberately removed a latch and gave `finish` a
+  default of `1'b0`; its mini-FSM asserts `finish = 1'b1` **only** in the
+  `success` state and immediately returns to `start`
+  (`Master_RX_LTSSM.v:238-252`). So `RXfinish`/`RXexitTo` are a genuine
+  **single-cycle** pulse, and `exitTo` is only meaningful during it.
+
+The transition out of Polling was written as
+
+```verilog
+// rtl/maintlssm.v, {pollingConfiguration,pollingConfiguration} item — BEFORE
+if (finishTx && finishRx && gotoTx==configurationLinkWidthStart
+                        && gotoRx==configurationLinkWidthStart)
+```
+
+That requires a **one-cycle strobe to land on the same clock edge as a level**,
+with both exit targets matching. TX and RX progress independently — TX's request
+depends on `OSCount`, RX's on its own comparators and timers — so when RX pulses
+first, its request is **discarded on the very next cycle and never re-issued**.
+The FSM then waits forever in `Polling.Configuration`. This is a race, not a
+deadlock: it can pass by luck and fail on the next run, which is why it looked
+intermittent.
+
+**Why `FSM-006` did not already cover it.** `FSM-006` identified exactly this
+failure mode and fixed it with sticky `txPollingDone` / `rxPollingDone` flags —
+but only for the single transition `{detectActive,detectActive} → pollingActive`.
+Every *later* both-strobe transition still used the raw coincidence test:
+
+| transition | old condition | effect |
+|---|---|---|
+| `{pollingConfiguration,pollingConfiguration}` → `configurationLinkWidthStart` | both strobes, same edge | **the reported stall** |
+| `{configurationComplete,configurationComplete}` → `configurationIdle` | both strobes, same edge **+ typo** | would stall Configuration |
+| `{recoveryIdle,recoveryIdle}` → `L0` | both strobes, same edge | would stall Recovery |
+| `{configurationLinkWidthAccept,…}` → `configurationLanenumWait` (`DEVICETYPE==1`) | both strobes, same edge | upstream builds only |
+
+**Second defect found in the same pass (copy/paste typo).**
+`{configurationComplete,configurationComplete}` read:
+
+```verilog
+// BEFORE — note gotoRx tested TWICE, gotoTx never tested at all
+if (finishRx&&gotoRx==configurationIdle&&finishTx&&gotoRx==configurationIdle)
+```
+
+so the TX side's requested exit state was **never checked**. Combined with the
+race above this transition was doubly broken.
+
+**Fix.** Generalize the `FSM-006` pattern instead of repeating it per
+transition. Four registers latch each side's outstanding request
+(`rtl/maintlssm.v:98`):
+
+```verilog
+reg       txHsValid;   reg [4:0] txHsTarget;
+reg       rxHsValid;   reg [4:0] rxHsTarget;
+```
+
+Captured in the clocked block (`:374`): when a side strobes `finish` with a
+non-`detectQuiet` target, the target is **remembered**. The capture is retired
+as soon as the substate pair actually moves, and dropped entirely on any return
+to `Detect` or on `forceDetect`, so a stale request can never shortcut a later
+handshake or a retry. The case items now compare the sticky copies, so the two
+sides no longer need to agree on a cycle:
+
+```verilog
+// AFTER
+if ((txHsValid && txHsTarget == configurationLinkWidthStart) &&
+    (rxHsValid && rxHsTarget == configurationLinkWidthStart))
+```
+
+**Deliberately not changed.** Requests to `detectQuiet` are *not* captured —
+the abort/timeout paths are still evaluated combinationally on the live strobes
+and keep priority. Latching an abort would let it fire after its cause is gone.
+Single-sided transitions (e.g. `:625` `finishRx&&gotoRx==configurationLanenumAccept`)
+were already satisfiable and are untouched. `FSM-006`'s existing
+`txPollingDone`/`rxPollingDone` are left in place rather than folded in, so the
+one transition already known to work is not disturbed.
+
+**Verification — what was actually executed here.**
+
+| check | result |
+|---|---|
+| slang elaboration, `--top PCIe`, all 55 `rtl/*.v` | **0 errors, 1310 warnings** — byte-identical to the pre-change baseline (no new warnings) |
+| yosys `proc; opt_clean; check -noinit; stat` on `mainLTSSM` | **0 problems**, **0 `$dlatch`** |
+| cell-count A/B (`git stash` vs. working tree) | `$adff` 22 → **26** (+4 = the new sticky regs), `$dff` 7 → **7**, `$eq` 504 → 509, `$mux` 764 → 798 — additive only |
+| QuestaSim re-run | **NOT VERIFIED** — the simulator exists only on your Windows machine |
+
+The A/B is the important one: the change is provably *additive* at the flop
+level, no existing storage element was altered, and nothing new infers a latch.
+
+**What you need to confirm.** Re-run and watch the substate pair leave
+`{pollingConfiguration,pollingConfiguration}` (= `3,3`) for
+`{configurationLinkWidthStart,…}` (= `4,4`), then continue to `L0` (= `10`).
+If it still stalls, the remaining candidate is that one side never asserts its
+request at all (e.g. TX's `OSCount` never reaching 16, or RX's `success` state
+never entered) — that is a datapath/timer question, not this handshake, and the
+sticky flags make it directly visible: probe `txHsValid`/`txHsTarget` and
+`rxHsValid`/`rxHsTarget` and whichever stays `0` names the side that never asked.
 
 ---
 
@@ -805,7 +923,7 @@ Allocated and used in this pass:
 ```
 BUGFIX-046  BUGFIX-047  BUGFIX-048  BUGFIX-049  BUGFIX-050  BUGFIX-051
 BUGFIX-052  BUGFIX-053  BUGFIX-054  BUGFIX-055
-FSM-005     FSM-006     FSM-007
+FSM-005     FSM-006     FSM-007     FSM-008
 SIM-003     SIM-004     SIM-006     SIM-007     SIM-008     SIM-009
 SIM-010     SIM-011     SIM-012     SIM-013     SIM-014     SIM-015
 WIDTH-001
@@ -830,17 +948,26 @@ Do **not** reuse a gap number: an ID that is absent from the tree is still absen
 from the history of earlier passes, and reusing one makes it impossible to tell
 which pass introduced a given comment. Allocate forward from the next free ID.
 
-**Next free IDs:** `BUGFIX-056`, `FSM-008`, `SIM-016`, `WIDTH-002`.
+**Next free IDs:** `BUGFIX-056`, `FSM-009`, `SIM-016`, `WIDTH-002`.
 
 ---
 
 ## 10. Recommended next actions, in priority order
 
-1. **Run `make sim FAST_TIMERS=1 RUN_TIME="2 ms"`** and confirm the LTSSM leaves
-   `Detect`. Single highest-value check; minutes, not hours. Then work through
-   §6.3 item by item — none of it is verified yet.
-2. **Re-run the UVM flow** (`make uvm-build && make uvm-run`) and confirm the time-0
-   hang is gone (`SIM-006`/`SIM-007`).
+1. **Run `make sim FAST_TIMERS=1 RUN_TIME="2 ms"` and confirm the LTSSM reaches
+   `L0`** — not merely that it leaves `Detect`. Items 1–2 of the previous
+   revision are now *done*: the time-0 hang is gone and training advances out of
+   `Detect`. The blocking question is `FSM-008` (§3.3): watch the substate pair
+   go `{3,3}` → `{4,4}` → … → `{10,10}`.
+   **If it still stalls**, probe `txHsValid`/`txHsTarget`/`rxHsValid`/`rxHsTarget`
+   in the waveform — whichever side's `…Valid` stays `0` is the side that never
+   issued its exit request, which localizes the fault to a datapath or timer
+   problem rather than the handshake. That is the single highest-value check and
+   it takes minutes. Then work through §6.3 item by item — none of it is verified
+   yet.
+2. **Re-run the UVM flow** (`make uvm-build && make uvm-run`). The time-0 hang is
+   fixed (`SIM-006`/`SIM-007`) and you have confirmed the run now advances; what
+   remains is checking it too reaches `L0` rather than stopping in Polling.
 3. **Decide on the `osDecoder` datapath restructure** (§5.1, last subsection). The
    non-constant loop bound you asked about is fixed and verified — the file now
    reads, elaborates and lifts async resets cleanly. What remains is that
