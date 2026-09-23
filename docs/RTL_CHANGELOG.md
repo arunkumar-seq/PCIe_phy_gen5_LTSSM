@@ -288,11 +288,23 @@ review; next free ID `BUGFIX-048`/`WIDTH-002`.
 
 ### 5.3 `rtl/OS_GENERATOR.v` — residual `PROC_ARST` limitation
 
-After `BUGFIX-047`, the `Multiple edge sensitive events` error is gone. yosys
-still cannot lift an async reset out of one process in this ~2000-line chain. The
-remaining fix would require **splitting the process**, which is an architecture
-change. Bisecting which sub-chain triggers it was attempted and abandoned — the
-trigger is not isolatable without the split. **Needs your sign-off.**
+`BUGFIX-047` restructures the process so that `PROC_ARST` *can* lift the async
+reset: the functional branch is now chained onto the reset test, which is exactly
+the condition that pass requires. The identical restructuring cleared the
+`Multiple edge sensitive events` error in `LMC.v` (`FSM-007`) and `maintlssm.v`
+(`FSM-001`), where it was observed to do so.
+
+For `OS_GENERATOR` specifically the post-fix confirmation run **did not complete**
+in the sandbox — WASM yosys spent ~25 minutes of CPU on this one module without
+producing output and was killed. So "the error is gone here too" is an expectation
+from the fix's structure, not a demonstrated result. See §6.2, and confirm with
+your own synthesis tool.
+
+Separately, yosys was still unable to lift an async reset out of one process in
+this ~2000-line chain even where it did run. The remaining fix would require
+**splitting the process**, which is an architecture change. Bisecting which
+sub-chain triggers it was attempted and abandoned — the trigger is not isolatable
+without the split. **Needs your sign-off.**
 
 ### 5.4 Nine unnamed generate blocks — **do not rename**
 
@@ -347,18 +359,52 @@ default build is provably unaffected.
 
 See §7 for the exact command and the live result. Summary of what was established:
 
-| Module | Result |
-|---|---|
-| `mainLTSSM` | clean — 0 problems reported, 29 registers inferred |
-| `LMC` | clean after `FSM-007` — 65 `$adff` inferred; `pipe_width` latch is pre-existing (§5.2) |
-| `OS_GENERATOR` | `Multiple edge sensitive events` **gone** after `BUGFIX-047`; residual `PROC_ARST` limitation remains (§5.3) |
-| `osDecoder` | blocked at read by the non-constant loop bound (§5.1) |
-| whole closure (`PCIe`) | see §7 — this run was still in progress when the document was written |
+| Module | Result | When |
+|---|---|---|
+| `mainLTSSM` | clean — 0 problems reported, 29 registers inferred | completed |
+| `LMC` | clean after `FSM-007` — 65 `$adff` inferred; `pipe_width` latch is pre-existing (§5.2) | completed |
+| `OS_GENERATOR` | `Multiple edge sensitive events` reproduced **before** `BUGFIX-047`; the post-fix confirmation run did **not** converge in the sandbox (see below) | partial |
+| `osDecoder` | blocked at read by the non-constant loop bound (§5.1) | reproduced |
+| whole closure (`PCIe`) | **not obtained** — see below | did not complete |
 
-yosys version: 0.69 (via `@yowasp/yosys`, WASM). Note that yosys is **not** a
-substitute for your target synthesis tool; it is used here as a fast, licence-free
-structural check for the `proc`/`check` classes of problem (async-reset lifting,
-inferred latches, combinational loops, uninitialised state).
+**Be precise about the `OS_GENERATOR` row.** What was actually executed and
+observed is the *failure before the fix*: yosys aborted with `ERROR: Multiple edge
+sensitive events found for this signal!` on register `D` in the process at
+`OS_GENERATOR.v:267`. That is the evidence `BUGFIX-047` was written against, and it
+is recorded verbatim in the `BUGFIX-047` comment banner in the source. The
+*post-fix* re-run was started twice and killed both times without producing output
+— not because it reported an error, but because it did not finish. So the claim
+"the error is gone" is **reasoned from the fix's structure** (the functional branch
+is now chained onto the reset test, which is exactly the condition `PROC_ARST`
+requires, and the same restructuring cleared the identical error in `LMC.v` and
+`maintlssm.v`), **not from a completed post-fix yosys run.** Treat it as expected
+rather than demonstrated, and confirm it with your own synthesis tool.
+
+**Why the runs did not converge.** yosys was run through `@yowasp/yosys` (version
+0.69, WebAssembly) because no native licence-free synthesizer was available in the
+sandbox. WASM yosys must parse all 46 synthesizable `rtl/*.v` files — several over
+100 KB, `OS_GENERATOR.v` alone containing a ~2000-line process — before it can
+elaborate *any* top, and it does that from scratch for every module. Measured
+cost: ~25 minutes of CPU on `OS_GENERATOR` alone with no output, and ~25 minutes
+on the `hierarchy -top PCIe` step of the closure run, both killed. This is a
+**sandbox throughput limit, not a design problem.** On a native yosys build the
+same commands take seconds to minutes.
+
+Reproduce it yourself where it will actually finish:
+
+```bash
+# native yosys (recommended - seconds, not tens of minutes)
+yosys -p "read_verilog rtl/*.v; hierarchy -top PCIe; proc; check -noinit; stat"
+
+# or the WASM path used here, with the osDecoder.v:181 caveat from §5.1
+bash tools_check/yosys_fixed.sh OS_GENERATOR    # one module
+bash tools_check/yosys_closure.sh               # whole closure
+```
+
+Note that yosys is **not** a substitute for your target synthesis tool. It is used
+here only as a licence-free structural check for the `proc`/`check` classes of
+problem: async-reset lifting, inferred latches, combinational loops, uninitialised
+state.
 
 ### 6.3 QuestaSim — **NOT VERIFIED**
 
@@ -394,17 +440,37 @@ These are your files, treated as ground truth about your environment:
 ## 7. Commands actually executed
 
 ```bash
-# slang elaboration gate (VERIFIED, 0 errors, 11 tops)
+# slang elaboration gate — COMPLETED, 0 errors, 55 files, 11 elaborated tops
 python3 tools_check/slang_check.py --rtl-dir rtl --show 30
 python3 tools_check/slang_check.py --rtl-dir rtl --define SIM_TIMER_PRESCALE=12
 python3 tools_check/slang_check.py --rtl-dir rtl --top PCIe
 
-# yosys full-closure synthesis check (PARTIALLY VERIFIED — long-running)
-bash tools_check/yosys_closure.sh        # → /tmp/yosys_closure/{hierarchy,proc,proc_dff}.log
-bash tools_check/yosys_targeted.sh       # per-module variant (slow; superseded by the above)
+# Makefile plumbing — COMPLETED (dry runs; vsim/vlog do not exist in the sandbox)
+make help
+make -n compile
+make -n sim
+make -n sim FAST_TIMERS=1 RUN_TIME="80 ms"
+make -n synth ; make -n synth-modules
+make lint                      # real run: 0 errors, 1311 warnings
 
-# change-ID inventory used to build §2
+# change-ID inventory used to build §2 and §9 — COMPLETED
 grep -rnoE "(BUGFIX|FSM|SIM|WIDTH)-[0-9]{3}" rtl/ tb/ tb_edited/
+
+# shell/Tcl static checks — COMPLETED
+bash -n scripts/run_questa.sh tools_check/*.sh
+python3 tools_check/md2docx.py docs/RTL_CHANGELOG.md docs/RTL_CHANGELOG.docx
+```
+
+**Started but killed — no result obtained** (all four were WASM-yosys throughput
+limit casualties, see §6.2):
+
+```bash
+bash tools_check/yosys_sweep.sh      # broad per-module sweep — killed, all modules
+                                     # aborted at read on osDecoder.v:181
+bash tools_check/yosys_targeted.sh   # targeted per-module sweep — killed
+bash tools_check/yosys_closure.sh    # hierarchy -top PCIe — killed at ~25 min CPU
+bash tools_check/yosys_fixed.sh OS_GENERATOR TX_LTSSM LMC mainLTSSM Timer
+                                     # killed at ~25 min CPU on OS_GENERATOR
 ```
 
 **Not executed anywhere:** any `vlog`, `vsim`, `vish`, `vlib`, `vmap`, `make sim`,
