@@ -160,7 +160,27 @@ end
 
 //starting polling state
 initial begin
-  logic [4*pipe_num_of_lanes - 1:0] previous_PowerDown;
+  // -------------------------------------------------------------------------
+  // SIM-004  (pipe_driver_bfm.sv - receiver-detect response loop never fired)
+  //
+  // Root cause : `previous_PowerDown` was declared without an initializer, so it
+  //              started as all-X. The guard
+  //                 wait(PowerDown[...] == 4'b0000 && PowerDown !== previous_PowerDown)
+  //              uses the case-inequality operator `!==`, and X !== X is FALSE,
+  //              so while previous_PowerDown held X the second term could never
+  //              be true: the initial block that answers the DUT's receiver
+  //              detection (PhyStatus pulse + RxStatus) was blocked forever on
+  //              the very first iteration and Detect never completed.
+  // Fix        : initialize previous_PowerDown to '1 so the first observed
+  //              PowerDown == 0 (P0 entry) differs from it and the handshake
+  //              fires. Found by the user during QuestaSim debugging; adopted
+  //              here unchanged apart from this comment.
+  // Expected   : on the DUT's first PowerDown=0 transition the BFM pulses
+  //              PhyStatus and drives RxStatus, letting DetectActive complete.
+  // Verification: NOT VERIFIED in sandbox (no QuestaSim); requires the user's
+  //              re-run.
+  // -------------------------------------------------------------------------
+  logic [4*pipe_num_of_lanes - 1:0] previous_PowerDown = '1;   // SIM-004
   forever begin
     for (int i = 0; i < `NUM_OF_LANES; i++) begin
       wait(PowerDown[(i*4) +:4] == 4'b0000 && PowerDown !== previous_PowerDown);
@@ -682,12 +702,72 @@ byte tlp_gen3_symbol_1;
 bit [7:0] data [$];
 bit k_data [$];
 
+// ---------------------------------------------------------------------------
+// SIM-006  (pipe_driver_bfm.sv / pipe_monitor_bfm.sv - get_width() decoded the
+//           wrong Width value and had no default, so it returned 0)
+//
+// Root cause : `Width` is the PIPE Width[1:0] bus driven by the DUT from
+//              mainLTSSM (rtl/maintlssm.v). Its encoding is documented right at
+//              the driver, rtl/maintlssm.v:432
+//                 "//check on gneration and adjust width reg 0 for 8bit
+//                   1 for 16bit 2 for 32bit"
+//              and implemented at maintlssm.v:439-469 as
+//                 8 -> width <= 0 ;  16 -> width <= 1 ;  32 -> width <= 2
+//              with `if(!reset) width <= 0`.
+//              The testbench decoder used
+//                 2'b00 -> 8 ; 2'b01 -> 16 ; 2'b11 -> 32
+//              i.e. it decoded 32-bit from 2'b11, which the DUT NEVER drives,
+//              and it had NO case for 2'b10 (the DUT's real 32-bit encoding)
+//              and NO default label. `lane_width` is an `int` local, so when no
+//              case item matched it kept its default value 0 and the function
+//              returned 0.
+//
+// Impact     : Width is X at time 0 (undriven interface member) and is 2'b10
+//              for every Gen3/Gen4/Gen5 (32-bit PIPE) phase, so get_width()
+//              returned 0 in exactly the situations the driver needs it:
+//                pipe_width     = 0
+//                bus_data_width = pipe_num_of_lanes * pipe_width = 0
+//                loop step      = (bus_data_width)/8 = 0
+//              The symbol-packing loop in send_data_gen_1_2()
+//                 for (k = 0; k < data_scrambled.size() + k; k = k + 0)
+//              then never advanced k and never drained the queue: an infinite
+//              ZERO-DELAY loop. Simulation time stops advancing at 0 ns and the
+//              simulator spins until the user interrupts it. This is precisely
+//              the user's QuestaSim transcript: every UVM_INFO is stamped "@ 0",
+//              `run -all` never returned, and "Break key hit / Break at
+//              ../agents/pipe_agent/pipe_driver_bfm.sv line 800" - line 800 is
+//              inside that very loop.
+//              (A 0 return value would also make 128/get_width() in the monitor
+//              a division by zero.)
+//
+// Fix        : decode 2'b10 -> 32 to match the DUT, keep 2'b11 -> 32 as a
+//              tolerant alias (no DUT path drives it, but it costs nothing and
+//              avoids a second silent 0), and add `default: lane_width = 8`.
+//              8 is the correct fallback because maintlssm.v drives width<=0
+//              (= 8-bit) during reset, so an X/undefined Width now behaves like
+//              "just came out of reset" instead of collapsing the datapath to
+//              zero width. No DUT code and no interface declaration changed.
+//
+// Expected   : get_width() returns 8/16/32 for Width 2'b00/2'b01/2'b10, and 8
+//              for anything else - never 0. bus_data_width is therefore always
+//              >= 8*pipe_num_of_lanes and every loop step derived from it is
+//              >= 1, so the packing loops always terminate.
+//
+// Verification: encoding cross-checked line-by-line against rtl/maintlssm.v:432
+//              and 439-469 (done in sandbox). slang rejects the previous
+//              no-default form with "'case' missing 'default' label".
+//              QuestaSim re-run: NOT VERIFIED (simulator only exists on the
+//              user's Windows machine) - the user must confirm that simulation
+//              time now advances past 0 ns.
+// ---------------------------------------------------------------------------
 function int get_width ();
 	int lane_width;
 	case (Width)
-		2'b00: lane_width = 8;
-		2'b01: lane_width = 16;
-		2'b11: lane_width = 32;
+		2'b00:   lane_width = 8;
+		2'b01:   lane_width = 16;
+		2'b10:   lane_width = 32;  // SIM-006: DUT drives 2'b10 for 32-bit
+		2'b11:   lane_width = 32;  // SIM-006: tolerant alias, never driven
+		default: lane_width = 8;   // SIM-006: never return 0 (reset value)
 	endcase
 	return lane_width;
 endfunction
@@ -780,7 +860,35 @@ endtask
   byte unsigned data_scrambled [$];
   int pipe_width = get_width();
   int bus_data_width = (pipe_num_of_lanes * pipe_width);
-  for(int i = 0; i < data.size() + i; i++) begin
+  // -------------------------------------------------------------------------
+  // SIM-007  (pipe_driver_bfm.sv - self-referential loop bounds could spin
+  //           forever; they also made the hang in SIM-006 unreachable to debug)
+  //
+  // Root cause : two loops used the loop variable inside their own bound:
+  //                  for (i = 0; i < data.size() + i; i++)
+  //                  for (k = 0; k < data_scrambled.size() + k; k += step)
+  //              `data.size() + i` only stays constant because the body pops
+  //              exactly one element per iteration, so the test reduces to
+  //              "queue not empty". That makes termination depend entirely on
+  //              the body always popping: if `k_data[i]` is neither D nor K the
+  //              first loop never drains `data`, and if `step` is 0 (the
+  //              SIM-006 get_width()==0 case) the second loop never advances k.
+  //              Either way the loop is infinite with no delay -> simulation
+  //              time freezes at 0 ns.
+  // Fix        : capture the queue depth ONCE before each loop and iterate to
+  //              that constant bound. Because the bodies pop exactly one (first
+  //              loop) / exactly `step` (second loop) elements per iteration,
+  //              the new bounds are arithmetically identical to the old ones for
+  //              every well-formed input, but they now guarantee termination
+  //              even if the queue contents are unexpected. SIM-006 guarantees
+  //              step = bus_data_width/8 = 2*pipe_width >= 16 > 0.
+  // Expected   : identical symbol packing/scrambling; no zero-delay spin.
+  // Verification: hand-derived equivalence of the old and new bounds for
+  //              pipe_num_of_lanes=16, pipe_width in {8,16,32} (see comments);
+  //              QuestaSim re-run NOT VERIFIED (user's machine only).
+  // -------------------------------------------------------------------------
+  int num_symbols = data.size();          // SIM-007: bound captured up front
+  for(int i = 0; i < num_symbols; i++) begin
     lanenum = i;
     lanenum = lanenum - pipe_num_of_lanes * ($floor(lanenum/pipe_num_of_lanes));
     if(k_data [i] == D) begin
@@ -793,7 +901,8 @@ endtask
   end  
   //`uvm_info("pipe_driver_bfm",$sformatf("data_scrambled = %p",data_scrambled),UVM_MEDIUM)
   //`uvm_info("pipe_driver_bfm",$sformatf("k_queue_data = %p",k_data),UVM_MEDIUM)
-  for (int k = 0; k < data_scrambled.size() + k ; k = k + (bus_data_width)/8) begin 
+  int num_scrambled = data_scrambled.size();   // SIM-007: bound captured up front
+  for (int k = 0; k < num_scrambled ; k = k + (bus_data_width)/8) begin 
     for (int j = 0; j < (bus_data_width)/(pipe_num_of_lanes*8); j++) begin
       for (int i = j ; i < (bus_data_width_param + 1)/8 ; i = i + (bus_data_width_param + 1)/(pipe_num_of_lanes*8)) begin 
         RxData[(8*i) +: 8] = data_scrambled.pop_front();

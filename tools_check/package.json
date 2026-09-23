@@ -1,0 +1,16 @@
+{
+  "name": "pcie-phy-gen5-ltssm-checks",
+  "version": "1.0.0",
+  "description": "Licence-free RTL checks (slang elaboration + yosys synthesis sweep) for the PCIe Gen5 PHY LTSSM repo",
+  "scripts": {
+    "lint": "python3 slang_check.py --rtl-dir ../rtl --show 30",
+    "synth": "bash yosys_targeted.sh"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@yowasp/yosys": "^0.70.62-dev.1236"
+  },
+  "private": true
+}

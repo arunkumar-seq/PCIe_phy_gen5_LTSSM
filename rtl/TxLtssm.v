@@ -714,6 +714,43 @@ TimerStart <= 0;
 		end		
 	endcase
 end
+
+// ---------------------------------------------------------------------------
+// BUGFIX-046  (TxLtssm.v - FSM-004 decode logic moved ABOVE its consumer)
+// Root cause : FSM-004 made the `always @(posedge Pclk)` output block below
+//              the single owner of SDSFlag and fed it from two continuous
+//              assignments, `sdsFlagSet` / `sdsFlagClr`, that were declared at
+//              the BOTTOM of the file (after `endmodule`-ward end of the
+//              block).  Verilog-2001 requires an identifier to be declared
+//              before it is referenced; because these are `wire`s with an
+//              inline continuous assignment, referencing them earlier is a
+//              hard compile error, not just a warning:
+//                slang  : "identifier 'sdsFlagClr' used before its declaration"
+//                slang  : "identifier 'sdsFlagSet' used before its declaration"
+//                QuestaSim: ** Error: (vlog-...) sdsFlagSet is not declared
+//              (QuestaSim additionally falls back to an *implicit* 1-bit net
+//              for the undeclared name, which would silently tie the SDSFlag
+//              set/clear decode to 0 and break Gen3+ SDS generation.)
+// Fix        : move the two `wire` declarations (and their explanatory
+//              comment) to just before the clocked block that consumes them.
+//              The expressions themselves are byte-for-byte unchanged, so the
+//              FSM-004 semantics and the locked design decision are preserved.
+// Expected   : SDSFlag is set in L0/RecoveryIdle for Gen>=3 when the ordered
+//              set generator is idle, and cleared on the RecoveryIdle exit
+//              paths / RecoveryRcvrCfg->RecoveryIdle, exactly as before.
+// Verification: slang elaboration of rtl/*.v --top PCIe goes from 2 errors to
+//              0 for this file (executed in sandbox); QuestaSim re-run is
+//              NOT VERIFIED (simulator only exists on the user's machine).
+// ---------------------------------------------------------------------------
+// FSM-004 decode logic (see the owner block below).
+wire sdsFlagSet = ((State == L0) && (Gen >= 3'b011) && !OSGeneratorBusy && !SDSFlag)
+               || ((State == RecoveryIdle) && !OSGeneratorBusy && (Gen >= 3'b011) && !SDSFlag);
+wire sdsFlagClr = ((State == RecoveryRcvrCfg) && (NextState == RecoveryIdle))
+               || ((State == RecoveryIdle) && (NextState == PollingActive
+                                              || NextState == PollingConfigration
+                                              || NextState == ConfigrationComplete
+                                              || NextState == L0));
+
 // outputs
 always @ (posedge Pclk)
 begin
@@ -792,13 +829,8 @@ begin
 	end
 end
 
-// FSM-004 decode logic (see the owner block above).
-wire sdsFlagSet = ((State == L0) && (Gen >= 3'b011) && !OSGeneratorBusy && !SDSFlag)
-               || ((State == RecoveryIdle) && !OSGeneratorBusy && (Gen >= 3'b011) && !SDSFlag);
-wire sdsFlagClr = ((State == RecoveryRcvrCfg) && (NextState == RecoveryIdle))
-               || ((State == RecoveryIdle) && (NextState == PollingActive
-                                              || NextState == PollingConfigration
-                                              || NextState == ConfigrationComplete
-                                              || NextState == L0));
+// BUGFIX-046: the FSM-004 sdsFlagSet/sdsFlagClr decode logic that used to live
+// here was moved above the clocked output block that consumes it (Verilog
+// requires declaration before use).  Nothing was removed - see BUGFIX-046.
 
 endmodule

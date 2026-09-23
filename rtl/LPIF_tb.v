@@ -10,11 +10,44 @@ module LPIF_tb();
 	wire [3:0]pl_state_sts;
 	wire [63:0]pl_dllpend, pl_dllpstart, pl_tlpStart, pl_tlpedb, pl_tlpend, pl_valid;
 
+	// ---------------------------------------------------------------------
+	// SIM-010  (LPIF_tb.v - four port connections to ports that no longer
+	//           exist on LPIF_RX_Control_DataFlow)
+	//
+	// Root cause : this scratch bench was written against an older
+	//              LPIF_RX_Control_DataFlow that also passed LTSSM state
+	//              through the LPIF block. The module in
+	//              rtl/LPIF RX Control & Data Flow.v now has exactly 18 ports:
+	//                clk, reset, tlpstart, dllpstart, tlpend, dllpend, edb,
+	//                packetValid, packetData, GEN,
+	//                pl_tlpstart, pl_dllpstart, pl_tlpend, pl_dllpend,
+	//                pl_tlpedb, pl_valid, pl_data, pl_speedmode
+	//              The bench still connected .lp_force_detect(), .state(),
+	//              .pl_state_sts() and .ltssmForceDetect(), none of which
+	//              exist. slang reports one "port ... does not exist in
+	//              'LPIF_RX_Control_DataFlow'" error per connection (4 errors)
+	//              and QuestaSim's vlog rejects the instantiation, which is why
+	//              this file had to be excluded from the compile list.
+	//              `ltssmForceDetect` was not even declared in the bench, so it
+	//              also relied on an implicit 1-bit net.
+	// Fix        : drop the four dead connections. Adding the ports back to the
+	//              DUT is NOT an option - the mission forbids changing DUT
+	//              interfaces, and the LTSSM force-detect / state paths now live
+	//              in mainLTSSM (rtl/maintlssm.v) and PCIe (rtl/PCIE.v), not in
+	//              the LPIF RX control/data-flow block. The local `state`,
+	//              `lp_force_detect` and `pl_state_sts` declarations and their
+	//              stimulus in the initial block are kept (they are simply
+	//              unconnected now) so no stimulus history is lost.
+	// Expected   : the bench elaborates and still exercises the packet
+	//              framing/pl_speedmode behaviour of the real module.
+	// Verification: slang elaboration of rtl/*.v --top PCIe goes from 4 errors
+	//              to 0 for this file (executed in sandbox). QuestaSim re-run:
+	//              NOT VERIFIED (simulator only exists on the user's machine).
+	// ---------------------------------------------------------------------
 	LPIF_RX_Control_DataFlow lpif(.clk(clk),  .reset(reset), .tlpstart(stp), .dllpstart(sdp), .tlpend(tlpEND), .dllpend(dllpEND), .edb(EDB), 
-							.packetValid(packetValid), .packetData(packetData), .lp_force_detect(lp_force_detect), .GEN(GEN), .state(state), 
+							.packetValid(packetValid), .packetData(packetData), .GEN(GEN), 
 							.pl_tlpstart(pl_tlpStart), .pl_dllpstart(pl_dllpstart), .pl_tlpend(pl_tlpend), .pl_dllpend(pl_dllpend), 
-							.pl_tlpedb(pl_tlpedb), .pl_valid(pl_valid), .pl_data(lpifData), .pl_speedmode(pl_speedmode), .pl_state_sts(pl_state_sts), 
-							.ltssmForceDetect(ltssmForceDetect));
+							.pl_tlpedb(pl_tlpedb), .pl_valid(pl_valid), .pl_data(lpifData), .pl_speedmode(pl_speedmode));
 
     always
 	begin

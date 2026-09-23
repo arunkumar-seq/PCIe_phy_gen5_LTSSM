@@ -226,12 +226,58 @@ module hdl_top;
   . TxDetectRx_Loopback                   (PIPE.TxDetectRxLoopback),
   . RxData                                (PIPE.RxData),
   . RxDataValid                           (PIPE.RxDataValid),
-  . RxDataK                               (PIPE.RxDataValid),
+  // ---------------------------------------------------------------------
+  // SIM-003  (hdl_top.sv - RxDataK was wired to RxDataValid)
+  // Root cause : the DUT's RxDataK port was connected to PIPE.RxDataValid
+  //              instead of PIPE.RxDataK. RxDataValid is 1 bit per lane
+  //              ([pipe_num_of_lanes-1:0] = 16 bits) while RxDataK is 1 bit
+  //              per *byte* ([bus_data_kontrol_param:0] = (32/8)*16 = 64 bits)
+  //              and the DUT port is [(MAXPIPEWIDTH/8)*LANESNUMBER-1:0] = 64
+  //              bits. So the connection was both the wrong signal and the
+  //              wrong width: every K-character (control-symbol) indicator
+  //              reaching the DUT was actually the lane's data-valid bit, and
+  //              the upper 48 bits were implicitly zero-extended.
+  // Impact     : the RX ordered-set checker (osChecker) classifies symbols as
+  //              data vs. control purely from RxDataK, so TS1/TS2/SKP/EIOS/SDS
+  //              detection and therefore the whole RX LTSSM was fed garbage.
+  // Fix        : connect the intended interface member, PIPE.RxDataK, whose
+  //              width (64) matches the DUT port exactly. No DUT or interface
+  //              declaration was changed.
+  // Expected   : RxDataK carries per-byte K indicators from the PIPE driver
+  //              BFM into the DUT; ordered sets are recognised correctly.
+  // Verification: width/decl cross-check against rtl/PCIE.v:31 and
+  //              tb/agents/pipe_agent/pipe_if.sv:19 (done in sandbox).
+  //              QuestaSim re-run: NOT VERIFIED (simulator only exists on the
+  //              user's Windows machine). Fix originally found by the user.
+  // ---------------------------------------------------------------------
+  . RxDataK                               (PIPE.RxDataK),
   . RxStartBlock                          (PIPE.RxStartBlock),
   . RxSyncHeader                          (PIPE.RxSyncHeader),
   //. RxStandby                             (PIPE.RxStandby), // missing the design now 
   . RxStatus                              (PIPE.RxStatus),
-  . RxElectricalIdle                      (PIPE.RxElecIdle),
+  // ---------------------------------------------------------------------
+  // WIDTH-001  (hdl_top.sv - RxElectricalIdle 1-bit vs 16-bit port)
+  // Root cause : the DUT port is `input [15:0] RxElectricalIdle`
+  //              (rtl/PCIE.v:35 - one electrical-idle indicator per lane,
+  //              LANESNUMBER=16), but pipe_if declares RxElecIdle as a SCALAR
+  //              (`logic RxElecIdle;`, pipe_if.sv:25). Connecting a 1-bit net
+  //              to a 16-bit port relies on implicit zero-extension, so lanes
+  //              1..15 were permanently tied to "not in electrical idle" and
+  //              only lane 0 ever saw the driver's value. QuestaSim reports
+  //              this as a port-width mismatch warning and the per-lane RX
+  //              logic then behaves inconsistently across lanes.
+  // Fix        : replicate the scalar explicitly to all 16 lanes with
+  //              {16{PIPE.RxElecIdle}}. This keeps the interface declaration
+  //              untouched (no architecture change) and makes the intent -
+  //              "one common electrical-idle indicator broadcast to every
+  //              lane" - explicit and width-correct.
+  // Expected   : all 16 lane slices of RxElectricalIdle follow the PIPE
+  //              driver's single RxElecIdle; no width-mismatch warning.
+  // Verification: widths cross-checked against rtl/PCIE.v:35 and pipe_if.sv:25
+  //              (done in sandbox). QuestaSim re-run: NOT VERIFIED. Fix
+  //              originally found by the user.
+  // ---------------------------------------------------------------------
+  . RxElectricalIdle                      ({16{PIPE.RxElecIdle}}),
   . PowerDown                             (PIPE.PowerDown),
   . Rate                                  (PIPE.Rate),
   . PhyStatus                             (PIPE.PhyStatus),  
@@ -297,8 +343,24 @@ module hdl_top;
   //   reset = 1;
   // end
 
+  // -------------------------------------------------------------------------
+  // SIM-009  (hdl_top.sv - progress heartbeat could not be silenced)
+  // Root cause : the 50 us progress heartbeat was issued at UVM_NONE. UVM_NONE
+  //              messages are printed UNCONDITIONALLY - UVM verbosity filtering
+  //              (+UVM_VERBOSITY=...) does not apply to them - so a pure
+  //              debug/progress trace polluted every transcript and could not
+  //              be turned off, which matters because `make run` output is what
+  //              the user reads to spot real errors.
+  // Fix        : issue it at UVM_DEBUG, the verbosity reserved for debug-only
+  //              tracing. It still appears when the user explicitly asks for
+  //              maximum verbosity and is silent otherwise. Testbench-only
+  //              change; no DUT, interface or message text affected.
+  // Expected   : quiet transcripts by default, heartbeat available on demand.
+  // Verification: change originally made by the user in tb_edited/; adopted
+  //              here. NOT VERIFIED in sandbox (no QuestaSim).
+  // -------------------------------------------------------------------------
   initial begin
-    forever #50000 `uvm_info("hdl_top", $sformatf("Time: %t", $time), UVM_NONE)
+    forever #50000 `uvm_info("hdl_top", $sformatf("Time: %t", $time), UVM_DEBUG)
   end
 
   initial begin

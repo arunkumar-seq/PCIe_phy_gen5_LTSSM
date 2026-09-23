@@ -1,3 +1,45 @@
+// ===========================================================================
+// SIM-012  (tb.v - scratch bench for a PRE-REFACTOR os_checker interface)
+//
+// Root cause : this bench instantiates `os_checker #(0) test(...)` with 16
+//              POSITIONAL port connections. The ordered-set checker in the
+//              current design is rtl/OS_Checker.v, module name `osChecker`
+//              (note the capitalisation - Verilog identifiers are case
+//              sensitive, hence slang's "unknown module 'os_checker'"), and it
+//              has 29 ANSI ports: the 16 this bench drives plus
+//              directed_speed_change, gen and the whole per-lane equalization
+//              read-back set (rateid/FS/LF, FSDSP, LFDSP, the four preset-hint
+//              buses, CursorCoff, PreCursorCoff, PostCursorCoff, ...).
+//              It also instantiates `counter #(8) Counter(...)` while rtl/
+//              Counter.v declares `module counter` with NO parameters at all
+//              (slang: "too many parameter assignments given for 'counter'").
+//              So this is not a rename: the bench predates the equalization
+//              support that was added to osChecker and cannot be connected to
+//              today's module without inventing new stimulus.
+//
+// Why not "fix" it : making it elaborate would mean either (a) adding the 13
+//              missing arguments with made-up values - i.e. writing a NEW
+//              testbench and silently changing what this one checks, or
+//              (b) adding parameters/ports to the DUT, which the mission
+//              explicitly forbids. Neither is a bug fix, and the project rule
+//              is not to delete tests to hide errors either.
+//
+// Fix        : the bench is preserved BYTE-FOR-BYTE but compiled only when
+//              `INCLUDE_LEGACY_OS_CHECKER_TB` is defined, so it can never
+//              break `vlog rtl/*.v` / the default elaboration again while
+//              remaining available for reference or for a future rewrite.
+//              To bring it back:
+//                 vlog +define+INCLUDE_LEGACY_OS_CHECKER_TB rtl/tb.v
+//
+// STATUS     : NEEDS A USER DECISION - either rewrite this bench against the
+//              29-port osChecker (new stimulus, out of scope of a bug fix) or
+//              retire it. Until then it is opt-in, not deleted.
+//
+// Verification: slang elaboration of rtl/*.v --top PCIe goes from 2 errors to 0
+//              for this file (executed in sandbox). Not run in QuestaSim
+//              (NOT VERIFIED - simulator only exists on the user's machine).
+// ===========================================================================
+`ifdef INCLUDE_LEGACY_OS_CHECKER_TB
 module tb;
     reg clk;
     reg linkNumber;
@@ -111,3 +153,5 @@ end
 
 always #5 clk = ~clk;
 endmodule
+
+`endif // INCLUDE_LEGACY_OS_CHECKER_TB  (SIM-012)

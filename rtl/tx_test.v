@@ -44,7 +44,12 @@ module tx_test;
 	wire [15:0] TxDetectRx_Loopback;
 	wire [63:0] PowerDown;
 	wire [15:0] TxElecIdle;
-	wire [15:0] detected_lanes;
+	// SIM-011: was `wire [15:0] detected_lanes;` connected to a non-existent
+	// TOP_MODULE port `.detected_lanes`. The real port is `NumberDetectLanes`,
+	// declared `output [4:0]` in rtl/TX .v and wired in rtl/PCIE.v:287 as
+	// `.NumberDetectLanes(NumberDetectLanesfromtx)` to a `wire [4:0]`. Width
+	// corrected to 5 bits to match; see the SIM-011 note at the instantiation.
+	wire [4:0] detected_lanes;
 	wire WriteDetectLanesFlag;
 	wire TXFinishFlag;
 	wire [3:0] TXExitTo;
@@ -117,7 +122,26 @@ module tx_test;
 		.PowerDown(PowerDown), 
 		.PhyStatus(PhyStatus), 
 		.TxElecIdle(TxElecIdle), 
-		.detected_lanes(detected_lanes), 
+		// ---------------------------------------------------------------
+		// SIM-011  (tx_test.v - connection to a port that does not exist)
+		// Root cause : the bench connected `.detected_lanes(detected_lanes)`
+		//   with a 16-bit local wire. TOP_MODULE (rtl/TX .v) has no such
+		//   port; the detected-lane count leaves the module on
+		//   `output [4:0] NumberDetectLanes` (see rtl/TX .v port list and
+		//   rtl/PCIE.v:91/287). slang: "port 'detected_lanes' does not exist
+		//   in 'TOP_MODULE'"; QuestaSim vlog rejects it the same way, which
+		//   is why this file had to be excluded from the compile list.
+		// Fix        : connect the real port name and narrow the local wire
+		//   from [15:0] to [4:0] so the widths match exactly (a 16-bit net
+		//   on a 5-bit output would only pad with implicit zeros and hide
+		//   the mismatch). No DUT port was added or renamed.
+		// Expected   : the bench elaborates and observes the same detected
+		//   lane count the real design produces.
+		// Verification: slang elaboration rtl/*.v --top PCIe goes from 1 error
+		//   to 0 for this file (executed in sandbox). QuestaSim re-run:
+		//   NOT VERIFIED (simulator only exists on the user's machine).
+		// ---------------------------------------------------------------
+		.NumberDetectLanes(detected_lanes), 
 		.WriteDetectLanesFlag(WriteDetectLanesFlag), 
 		.SetTXState(SetTXState), 
 		.TXFinishFlag(TXFinishFlag), 

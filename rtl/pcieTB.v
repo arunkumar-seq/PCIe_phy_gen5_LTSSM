@@ -106,6 +106,66 @@ initial
 begin
     CLK = 0;
     reset = 0;
+    // ---------------------------------------------------------------------
+    // SIM-014  (pcieTB.v - five DUT inputs were declared but never driven)
+    //
+    // Root cause : this bench declares the DUT inputs it drives as `reg`s and
+    //              assigns them from the initial block below, but five of them
+    //              were never assigned anywhere:
+    //                RxElectricalIdle[15:0]
+    //                LinkEvaluationFeedbackDirectionChange[6*16-1:0]
+    //                lp_force_detect
+    //                PclkChangeOk
+    //                P2M_MessageBus[7:0]
+    //              An undriven `reg` stays X for the whole simulation, so X was
+    //              being fed straight into the design. Three of the five are
+    //              genuinely consumed inside rtl/PCIE.v:
+    //                * RxElectricalIdle  -> PCIE.v:220 into the RX block, i.e.
+    //                  per-lane electrical-idle detection sees X on all 16
+    //                  lanes;
+    //                * LinkEvaluationFeedbackDirectionChange -> PCIE.v:183 into
+    //                  TOP_MODULE, i.e. the Gen3+ equalization feedback path
+    //                  sees X;
+    //                * lp_force_detect   -> PCIE.v:153 as mainLTSSM's
+    //                  `.forceDetect(...)`, the very signal FSM-001 had to
+    //                  restructure. With X there, the
+    //                  `else if(forceDetect)` test in maintlssm.v evaluates to
+    //                  "not taken" by luck rather than by design.
+    //              (PclkChangeOk and P2M_MessageBus are declared as PCIe ports
+    //              but are not connected to any submodule inside the closure -
+    //              the PCLK-change handshake is not implemented in this design -
+    //              so they are harmless; they are initialized anyway for a clean
+    //              waveform.)
+    // Impact     : X-propagation into RX idle detection, the equalization
+    //              feedback and the LTSSM force-detect control. In the waveform
+    //              viewer these show up as red/X traces, and any `wait()` or
+    //              `if()` in the DUT that samples them is resolved by Verilog's
+    //              "X is not true" rule instead of by a defined value - which
+    //              makes failures look intermittent and very hard to debug.
+    // Fix        : initialize all five to their defined INACTIVE values at the
+    //              top of the existing initial block (before reset is released),
+    //              and keep RxElectricalIdle at 0 - "not in electrical idle" -
+    //              which matches what the UVM environment drives
+    //              (hdl_top.sw connects {16{PIPE.RxElecIdle}} and pipe_if's
+    //              RxElecIdle is 0). No DUT port, no protocol and no existing
+    //              stimulus was changed; these lines only give previously-X
+    //              nets a defined value. Testbench-only (pcieTB.v is explicitly
+    //              simulation-only and not part of the synthesis closure).
+    // Expected   : no X on RxElectricalIdle / LinkEvaluationFeedbackDirection-
+    //              Change / lp_force_detect / PclkChangeOk / P2M_MessageBus in
+    //              the waveform; the LTSSM's forceDetect input is a clean 0 so
+    //              the FSM-001 synchronous re-init path is never taken by
+    //              accident.
+    // Verification: consumption of each signal traced through rtl/PCIE.v:153,
+    //              183, 220 (done in sandbox); slang elaboration of rtl/*.v
+    //              stays at 0 errors. QuestaSim re-run: NOT VERIFIED (the
+    //              simulator only exists on the user's Windows machine).
+    // ---------------------------------------------------------------------
+    RxElectricalIdle                   = {16{1'b0}};   // SIM-014: not in electrical idle
+    LinkEvaluationFeedbackDirectionChange = {(6*16){1'b0}};   // SIM-014: no EQ feedback
+    lp_force_detect                    = 1'b0;         // SIM-014: no forced re-detect
+    PclkChangeOk                       = 1'b0;         // SIM-014: unused in this design
+    P2M_MessageBus                     = 8'h00;        // SIM-014: unused in this design
     #20
     reset = 1;
     #10

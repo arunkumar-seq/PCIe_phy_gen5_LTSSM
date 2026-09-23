@@ -1,0 +1,48 @@
+#-----------------------------------------------------------------------------
+# Build / simulation artifacts
+#
+# Nothing here is source. The `make` flow in the repo root writes everything
+# into sim/, and QuestaSim drops its own scratch files next to wherever vsim was
+# started. Files already committed under tb_edited/sim/ are the user's own
+# debugging artifacts and are intentionally left tracked - this ignore list only
+# stops NEW scratch output from being added.
+#-----------------------------------------------------------------------------
+
+# root Makefile / scripts output directory
+/sim/
+
+# QuestaSim / ModelSim libraries and scratch
+work/
+**/work/
+*.mpf
+*.mti
+modelsim.ini
+transcript
+transcript.*
+*.wlf
+wlft*
+vsim_stacktrace.vstf
+vish_stacktrace.vstf
+*.vstf
+voptstacktrace.vstf
+_opt/
+_opt*/
+
+# logs
+*.log
+questa_sim.log
+
+# editor / OS scratch
+*~
+*.bak
+*.orig
+*.swp
+.DS_Store
+Thumbs.db
+
+# licence-free check tooling (node/python deps stay out of git)
+node_modules/
+__pycache__/
+*.pyc
+.yowasp/
+/tmp/
