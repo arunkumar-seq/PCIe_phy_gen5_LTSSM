@@ -1,3 +1,49 @@
+// ===========================================================================
+// SIM-013  (LMC_tb.v - bench instantiated the wrong lane-management module)
+//
+// Root cause : the bench instantiated `LMC`, but every port it connects -
+//              clk, reset, GEN, descramblerSyncHeader, descramblerDataValid,
+//              LANESNUMBER, LMCIn, descramblerDataK, LMCValid, LMCDataK,
+//              LMCData - and the parameter it overrides (GEN1_PIPEWIDTH) are
+//              the interface of `LMC_RX`, not of `LMC`. The design has TWO
+//              lane-management blocks:
+//                * LMC     (rtl/LMC.v)                     - TX side, 16 lanes,
+//                  ports reset_n/pclk/generation/data_valid/data/d_k_in/
+//                  MUXSyncHeader/PIPEWIDTH plus per-lane dataout_n, d_k_out_n,
+//                  data_valid_out_n, LMCSyncHeader_n;
+//                * LMC_RX  (rtl/Lane_Management_Control.v) - RX side, ports
+//                  clk/reset/GEN/descramblerSyncHeader/descramblerDataValid/
+//                  LANESNUMBER/LMCIn/descramblerDataK -> LMCValid/LMCSyncHeader/
+//                  LMCDataK/LMCData, parameters GEN1..GEN5_PIPEWIDTH.
+//              LMC_RX is the one actually instantiated by the RX block
+//              (rtl/Modules Integration.v:103) with precisely this connection
+//              list. So the bench is correct in substance and simply names the
+//              wrong module - slang reported 11 "port ... does not exist in
+//              'LMC'" errors, one per connection, and QuestaSim's vlog rejects
+//              the instantiation the same way, which is why this file had to be
+//              excluded from the compile list.
+//
+// Fix        : instantiate LMC_RX instead of LMC. One identifier changes; no
+//              port connection, no stimulus, no DUT and no parameter is
+//              touched. LMC_RX has no GEN1_PIPEWIDTH-only parameter list
+//              problem either - it declares GEN1..GEN5_PIPEWIDTH, so the
+//              existing `#(.GEN1_PIPEWIDTH(8))` override is valid as written.
+//              The bench leaves LMC_RX's `LMCSyncHeader` output unconnected;
+//              that is intentional here (the bench only watches LMCData /
+//              LMCDataK / LMCValid) and produces at most an unconnected-port
+//              warning, not an error.
+//
+// Expected   : LMC_tb elaborates and drives the RX lane-management block with
+//              its original PIPEWIDTH 8/16/32 x LANESNUMBER 1/2/4/8/16 stimulus
+//              sweep, unchanged.
+//
+// Verification: slang elaboration of rtl/*.v goes from 11 errors to 0 for this
+//              file, and LMC_tb is one of the elaborated top-level candidates
+//              (executed in sandbox). Port/parameter list cross-checked against
+//              rtl/Lane_Management_Control.v:1 and rtl/Modules Integration.v:103.
+//              QuestaSim re-run: NOT VERIFIED (simulator only exists on the
+//              user's Windows machine).
+// ===========================================================================
 module LMC_tb();
 
 	reg [2:0]GEN = 1;
@@ -9,7 +55,8 @@ module LMC_tb();
 	wire LMCValid;
 	wire [63:0]LMCDataK;
 
-	LMC #(.GEN1_PIPEWIDTH(8)) lmc(.clk(clk), .reset(reset), .GEN(GEN), .descramblerSyncHeader(2'b00), .descramblerDataValid(16'hFFFF), .LANESNUMBER(LANESNUMBER), 
+	// SIM-013: was `LMC #(.GEN1_PIPEWIDTH(8)) lmc(...)` - see the header.
+	LMC_RX #(.GEN1_PIPEWIDTH(8)) lmc(.clk(clk), .reset(reset), .GEN(GEN), .descramblerSyncHeader(2'b00), .descramblerDataValid(16'hFFFF), .LANESNUMBER(LANESNUMBER), 
 									.LMCIn(LMCIn), .descramblerDataK(descramblerDataK), .LMCValid(LMCValid), .LMCDataK(LMCDataK), .LMCData(LMCData));
 
     always

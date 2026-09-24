@@ -28,6 +28,32 @@ output [7:0] linkNumberOut,
 output upConfigureCapability,
 output finish,
 output [4:0]exitTo,
+// ---------------------------------------------------------------------
+// BUGFIX-055  (RX - `linkUp` was used but never declared and never driven)
+//
+// Root cause : inside RX the name `linkUp` is consumed in two places - the
+//              positional connection to osDecoder (line ~115) and
+//              `.linkup(linkUp)` to packet_identifier (line ~167), where
+//              `linkup` is an INPUT (packet_identifier.v:16). But RX neither
+//              declared `linkUp` nor had it as a port, so Verilog created an
+//              IMPLICIT 1-bit wire that nothing ever drove. Every consumer
+//              therefore saw X for the whole simulation. yosys reports it on
+//              the closure as `Wire ...\RX.\linkUp is used but has no driver`.
+//
+// Fix        : add it as an input port, in the position the project's own
+//              dead bench already expects it - RX_TB_Integration's positional
+//              instantiation (line ~238) passes `linkUp` between `exitTo` and
+//              `witeUpconfigureCapability`, which is exactly this gap. That is
+//              strong evidence the port was dropped from RX's list rather than
+//              never existing.
+//              Driven from PCIE.v by `pl_linkUp`, which mainLTSSM already
+//              drives (maintlssm.v:68 `output reg linkUp`, wired at
+//              PCIE.v:154) - i.e. the real link-up status, not a tie-off.
+//
+// Verification: yosys closure `check` - `RX.\linkUp ... has no driver` gone.
+//              slang: 0 errors. QuestaSim: NOT VERIFIED.
+// ---------------------------------------------------------------------
+input linkUp,
 output witeUpconfigureCapability,
 output writerateid,
 output writeLinkNumber,

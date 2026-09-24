@@ -87,6 +87,27 @@ parameter LANESNUMBER = 16)
     reg upConfigureCapability;
     reg [3:0]currentState,nextState;
     reg [4:0] substateTxnext,substateRxnext;
+    // -----------------------------------------------------------------------
+    // FSM-006: sticky "this side already finished DetectActive" flags.
+    // Declared here (see the clocked block and the {detectActive,detectActive}
+    // case item for the full root-cause write-up).
+    // -----------------------------------------------------------------------
+    reg txPollingDone;
+    reg rxPollingDone;
+    // -----------------------------------------------------------------------
+    // FSM-008: generic sticky capture of the per-side (finish, goto) handshake.
+    // FSM-006 solved this race for exactly one transition
+    // ({detectActive,detectActive} -> pollingActive) with a dedicated flag
+    // pair. The same defect remains on every other transition that demands
+    // BOTH sides' strobes on the SAME clock edge, so the pattern is
+    // generalized here: each side remembers the exit state it last requested
+    // until the pair actually moves. See the clocked capture block below and
+    // the affected case items for the full root-cause write-up.
+    // -----------------------------------------------------------------------
+    reg       txHsValid;          // TX has an outstanding exit request
+    reg [4:0] txHsTarget;         // ... and this is the state it asked for
+    reg       rxHsValid;          // RX has an outstanding exit request
+    reg [4:0] rxHsTarget;         // ... and this is the state it asked for
     integer i;
     // BUGFIX-017b/010/011: helper signals for the latch-free, single-driver
     // re-implementation of the output handling block (see comments there):
@@ -155,6 +176,54 @@ parameter LANESNUMBER = 16)
         if(!reset)
         begin
             currentState <= reset_;
+            // -----------------------------------------------------------------
+            // FSM-005: substateTx / substateRx had NO reset value at all.
+            // Root cause : the async-reset branch (and the forceDetect branch
+            //              below) initialized currentState, GEN, the preset
+            //              hints and the equalization registers, but never the
+            //              two 5-bit substate registers. They are only written
+            //              in the 'else' (functional) branch as
+            //              `substateTx <= substateTxnext`, and substateTxnext
+            //              defaults to "hold" ({substateTx,substateRx}) in the
+            //              combinational output block. So after power-up both
+            //              registers are X for the whole of reset and stay X
+            //              until the first functional clock edge, where the
+            //              `case ({substateTx,substateRx})` selector is X.
+            // Impact     : (a) substateTx/substateRx are MODULE OUTPUTS feeding
+            //                 the Master_TX / Master_RX LTSSMs, so X is
+            //                 propagated into the per-lane FSMs during reset
+            //                 (X-propagation in QuestaSim, waveforms show
+            //                 'zzzzz'/red); (b) synthesis infers two 5-bit
+            //                 registers with no reset, so the LTSSM substate is
+            //                 undefined at power-up on real hardware; (c) the
+            //                 selector only recovers because the reset_ case
+            //                 happens to have a `default:` that forces
+            //                 detectQuiet - i.e. correctness depended on a
+            //                 fallback rather than on a defined reset state.
+            // Fix        : initialize both to detectQuiet (the encoding the
+            //              case-default already used) in BOTH the async-reset
+            //              and the forceDetect re-initialization paths, so the
+            //              FSM always leaves reset in a defined state.
+            // Expected   : substateTx == substateRx == detectQuiet immediately
+            //              after reset, no X on the Master_TX/Master_RX
+            //              substate inputs, and the LTSSM starts from
+            //              {detectQuiet,detectQuiet} deterministically.
+            // Verification: slang elaboration rtl/*.v --top PCIe (executed in
+            //              sandbox, 0 errors); yosys proc/check per module
+            //              (executed in sandbox). QuestaSim waveform re-run is
+            //              NOT VERIFIED here - the simulator only exists on the
+            //              user's Windows machine.
+            // -----------------------------------------------------------------
+            substateTx <= detectQuiet;
+            substateRx <= detectQuiet;
+            // FSM-006: clear the sticky DetectActive-completion flags on reset.
+            txPollingDone <= 1'b0;
+            rxPollingDone <= 1'b0;
+            // FSM-008: same for the generic sticky handshake capture.
+            txHsValid  <= 1'b0;
+            txHsTarget <= 5'd0;
+            rxHsValid  <= 1'b0;
+            rxHsTarget <= 5'd0;
             ReceiverpresetHintDSP<=48'hAABBCCDD1122;
             TransmitterPresetHintDSP<=64'h11AA22BB33CC44DD;
             ReceiverpresetHintUSP<=48'h2211DDCCBBAA;
@@ -179,6 +248,20 @@ parameter LANESNUMBER = 16)
         begin
             // FSM-001: synchronous re-initialization (same values as reset)
             currentState <= reset_;
+            // FSM-005: same defined substate init as the async-reset path, so a
+            // forced re-detect also restarts from {detectQuiet,detectQuiet}
+            // instead of leaving the previous (possibly stale) substate.
+            substateTx <= detectQuiet;
+            substateRx <= detectQuiet;
+            // FSM-006: a forced re-detect must not inherit a completed
+            // DetectActive handshake from the previous link training round.
+            txPollingDone <= 1'b0;
+            rxPollingDone <= 1'b0;
+            // FSM-008: likewise drop any outstanding generic handshake capture.
+            txHsValid  <= 1'b0;
+            txHsTarget <= 5'd0;
+            rxHsValid  <= 1'b0;
+            rxHsTarget <= 5'd0;
             ReceiverpresetHintDSP<=48'hAABBCCDD1122;
             TransmitterPresetHintDSP<=64'h11AA22BB33CC44DD;
             ReceiverpresetHintUSP<=48'h2211DDCCBBAA;
@@ -202,6 +285,152 @@ parameter LANESNUMBER = 16)
             currentState <= nextState;
             substateTx <= substateTxnext;
             substateRx <= substateRxnext;
+
+            // -----------------------------------------------------------------
+            // FSM-006: DetectActive -> PollingActive handshake was a
+            //          "both strobes in the same cycle" race.
+            //
+            // Root cause : the {detectActive,detectActive} case item used to
+            //              require
+            //                finishTx && finishRx &&
+            //                gotoTx == pollingActive && gotoRx == pollingActive
+            //              i.e. the TX and the RX LTSSM had to assert their
+            //              completion strobe on the SAME Pclk edge.
+            //              That used to be satisfied by accident: 'finish' on
+            //              the RX side was an inferred LATCH, so a stale
+            //              finish=1 stayed high until the next assignment and
+            //              the AND eventually closed. BUGFIX-016 (correctly)
+            //              gave Master_RX_LTSSM.v a combinational default of
+            //              finish=1'b0, turning 'finish' into a clean ONE-CYCLE
+            //              strobe - which is what the PCIe/LPIF handshake needs
+            //              and what fixed the spurious-transition reports
+            //              (#74/#77). TXFinishFlag is likewise a registered copy
+            //              of the combinational ExitToFlag (TxLtssm.v), so it is
+            //              also a single-cycle strobe.
+            //              With both sides now strobing for exactly one cycle,
+            //              the AND is only true if the two independent per-lane
+            //              FSMs happen to finish on the same edge. In practice
+            //              the RX side finishes first (it only has to detect
+            //              receivers / count ordered sets) while the TX side is
+            //              still waiting on its 12 ms Detect timer, so the
+            //              pulse is missed and mainLTSSM sits in
+            //              {detectActive,detectActive} forever: no PollingActive,
+            //              no pl_linkUp, no speed change - the link never trains.
+            //              Observed by the user in QuestaSim 10.4e with
+            //              finishTx/finishRx/gotoTx/gotoRx/substateTx/substateRx
+            //              on the waveform (tb/sim/design.do), simulation stuck
+            //              in DetectActive.
+            //
+            // Fix        : capture each side's completion strobe in a sticky
+            //              flag (txPollingDone / rxPollingDone) and let the case
+            //              item fire on "flag OR strobe". The flags are cleared
+            //              when the handshake completes (next substate is
+            //              pollingActive) or when the FSM falls back to
+            //              detectQuiet, and on reset / forceDetect (FSM-005
+            //              block above). This is the standard pulse-handshake
+            //              capture; it changes NO protocol state, NO encoding
+            //              and NO output other than allowing the existing
+            //              transition to fire when the two strobes are not
+            //              simultaneous.
+            //
+            // Expected   : TX and RX may complete DetectActive on different
+            //              cycles; as soon as the second one finishes,
+            //              {substateTx,substateRx} advances to
+            //              {pollingActive,pollingActive} and link training
+            //              proceeds through Polling -> Configuration -> L0.
+            //              Falling back to detectQuiet still works and clears
+            //              both flags, so a re-detect starts clean.
+            //
+            // Verification: slang elaboration rtl/*.v --top PCIe = 0 errors and
+            //              yosys proc/opt_clean/check -noinit on maintlssm =
+            //              clean (both executed in this sandbox). Behavioural
+            //              confirmation needs QuestaSim -> NOT VERIFIED here;
+            //              the user must re-run `make sim` and confirm the LTSSM
+            //              reaches PollingActive/L0.
+            // -----------------------------------------------------------------
+            if ((substateTxnext == pollingActive) &&
+                (substateRxnext == pollingActive))
+            begin
+                // handshake completed - forget it for the next round
+                txPollingDone <= 1'b0;
+                rxPollingDone <= 1'b0;
+            end
+            else if ((substateTxnext == detectQuiet) ||
+                     (substateRxnext == detectQuiet))
+            begin
+                // back to Detect - a stale capture must not shortcut the retry
+                txPollingDone <= 1'b0;
+                rxPollingDone <= 1'b0;
+            end
+            else
+            begin
+                if (finishTx && gotoTx == pollingActive)
+                    txPollingDone <= 1'b1;
+                if (finishRx && gotoRx == pollingActive)
+                    rxPollingDone <= 1'b1;
+            end
+
+            // -----------------------------------------------------------------
+            // FSM-008: generic sticky (finish, goto) capture for every
+            //          transition that needs BOTH sides to agree.
+            //
+            // ROOT CAUSE of the "stuck in Polling" stall:
+            //   finishTx (TX_LTSSM.TXFinishFlag) is a LEVEL. In TxLtssm.v the
+            //   combinational exit block holds ExitToFlag=1 for as long as the
+            //   state condition holds (e.g. PollingConfigration && OSCount>=16,
+            //   TxLtssm.v L172-177), so TXFinishFlag stays high across many
+            //   cycles.
+            //   finishRx (Master_RX_LTSSM.finish) is a genuine ONE-CYCLE
+            //   STROBE. FSM-003 deliberately removed its latch and gave it a
+            //   default of 1'b0; its mini-FSM asserts finish=1 only in the
+            //   'success' state and immediately goes back to 'start'
+            //   (Master_RX_LTSSM.v L238-252).
+            //   A condition of the form 'finishTx && finishRx && gotoTx==X &&
+            //   gotoRx==X' therefore only fires if the RX strobe's single cycle
+            //   happens to land while the TX level is already high AND both
+            //   exit targets match. The two sides progress independently, so
+            //   that coincidence is a race - when RX strobes first, the request
+            //   is lost forever and the FSM never leaves Polling.Configuration.
+            //
+            // FIX (same pattern FSM-006 proved on detectActive->pollingActive,
+            //      now generalized): latch each side's request when it strobes
+            //      and let the case statement compare the sticky copies. The
+            //      capture is retired as soon as the substate pair moves, and
+            //      dropped entirely on any return to Detect, so a stale request
+            //      can never shortcut a later handshake or a retry.
+            //
+            // NOTE: exit requests to detectQuiet are intentionally NOT
+            //      captured - the abort paths are evaluated combinationally on
+            //      the live strobes and must keep priority (a latched abort
+            //      would fire after the reason for it is gone).
+            // -----------------------------------------------------------------
+            if ((substateTxnext != substateTx) || (substateRxnext != substateRx))
+            begin
+                // a transition is being taken this cycle - retire the handshake
+                txHsValid  <= 1'b0;
+                rxHsValid  <= 1'b0;
+            end
+            else if ((substateTxnext == detectQuiet) ||
+                     (substateRxnext == detectQuiet))
+            begin
+                // back to Detect - a stale capture must not shortcut the retry
+                txHsValid  <= 1'b0;
+                rxHsValid  <= 1'b0;
+            end
+            else
+            begin
+                if (finishTx && gotoTx != detectQuiet)
+                begin
+                    txHsValid  <= 1'b1;
+                    txHsTarget <= gotoTx;
+                end
+                if (finishRx && gotoRx != detectQuiet)
+                begin
+                    rxHsValid  <= 1'b1;
+                    rxHsTarget <= gotoRx;
+                end
+            end
+
             if(writeNumberOfDetectedLanes)numberOfDetectedLanes<=numberOfDetectedLanesIn;
             if(writeLinkNumberTx)linkNumber<=linkNumberInTx;
             else if(writeLinkNumberRx)linkNumber<=linkNumberInRx;
@@ -398,7 +627,17 @@ end
                 
                 {detectActive,detectActive}:
                 begin
-                    if (finishTx&&finishRx&&gotoTx==pollingActive&&gotoRx==pollingActive) 
+                    // FSM-006: was
+                    //   if (finishTx && finishRx &&
+                    //       gotoTx == pollingActive && gotoRx == pollingActive)
+                    // which demanded both one-cycle completion strobes on the
+                    // same clock edge (see the FSM-006 write-up on the sticky
+                    // txPollingDone/rxPollingDone capture in the clocked block).
+                    // Each side now also accepts a previously captured strobe.
+                    if ((txPollingDone ||
+                         (finishTx && gotoTx == pollingActive)) &&
+                        (rxPollingDone ||
+                         (finishRx && gotoRx == pollingActive)))
                         begin
                             {substateTxnext,substateRxnext} = {pollingActive,pollingActive};
                             lpifStateStatus = reset_;
@@ -425,7 +664,14 @@ end
                 end
                 {pollingConfiguration,pollingConfiguration}:
                 begin
-                    if (finishTx&&finishRx&&gotoTx==configurationLinkWidthStart&&gotoRx==configurationLinkWidthStart) 
+                    // FSM-008: was 'finishTx&&finishRx&&gotoTx==configurationLinkWidthStart
+                    // &&gotoRx==configurationLinkWidthStart'. finishRx is a
+                    // one-cycle strobe while finishTx is a level, so requiring
+                    // both on the same edge made this transition a race - it is
+                    // the stall the user observed in Polling. Now compared
+                    // against the sticky captures.
+                    if ((txHsValid && txHsTarget == configurationLinkWidthStart) &&
+                        (rxHsValid && rxHsTarget == configurationLinkWidthStart))
                         begin
                             {substateTxnext,substateRxnext}= {configurationLinkWidthStart,configurationLinkWidthStart};
                             lpifStateStatus = reset_;
@@ -457,6 +703,16 @@ end
                             lpifStateStatus = reset_;
                         end
                     else if (DEVICETYPE&&finishTx&&finishRx&&gotoTx==configurationLanenumWait&&gotoRx==configurationLanenumWait) 
+                        begin
+                            // FSM-008: upstream (DEVICETYPE==1) path had the
+                            // same both-strobes-on-one-edge race. Not exercised
+                            // by the current downstream configuration, fixed for
+                            // consistency so an upstream build does not stall.
+                            {substateTxnext,substateRxnext}= {configurationLanenumWait,configurationLanenumWait};
+                            lpifStateStatus = reset_;
+                        end
+                    else if (DEVICETYPE&&(txHsValid&&txHsTarget==configurationLanenumWait)&&
+                                       (rxHsValid&&rxHsTarget==configurationLanenumWait))
                         begin
                             {substateTxnext,substateRxnext}= {configurationLanenumWait,configurationLanenumWait};
                             lpifStateStatus = reset_;
@@ -490,7 +746,15 @@ end
                             lpifStateStatus = reset_;
                         end
                 {configurationComplete,configurationComplete}:
-                    if (finishRx&&gotoRx==configurationIdle&&finishTx&&gotoRx==configurationIdle) 
+                    // FSM-008: this item had TWO defects. (a) The same
+                    // strobe-vs-level coincidence race as Polling.Configuration.
+                    // (b) A copy/paste typo - the condition read
+                    // 'finishRx&&gotoRx==configurationIdle&&finishTx&&
+                    //  gotoRx==configurationIdle', testing gotoRx twice and
+                    // never testing gotoTx at all. Both are fixed by comparing
+                    // the sticky captures, which name each side explicitly.
+                    if ((txHsValid && txHsTarget == configurationIdle) &&
+                        (rxHsValid && rxHsTarget == configurationIdle))
                         begin
                             {substateTxnext,substateRxnext}= {configurationIdle,configurationIdle};
                             lpifStateStatus = reset_;
@@ -685,7 +949,13 @@ end
                 {recoveryIdle,recoveryIdle}:
                 begin
                     //disableScrambler = 1'b0;
-                    if((finishRx && gotoRx == L0) && (finishTx && gotoTx == L0))
+                    // FSM-008: was '(finishRx && gotoRx == L0) && (finishTx &&
+                    // gotoTx == L0)'. Same one-cycle-strobe-vs-level race as
+                    // Polling.Configuration - Recovery would have stalled here
+                    // on any link that got that far. Now uses the sticky
+                    // captures so the two sides need not agree on a cycle.
+                    if ((txHsValid && txHsTarget == L0) &&
+                        (rxHsValid && rxHsTarget == L0))
                          {substateTxnext,substateRxnext}= {L0,L0};
                 end
            endcase

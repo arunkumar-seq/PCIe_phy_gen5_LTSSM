@@ -24,7 +24,40 @@ output reg [1:0] LMCSyncHeader_1, LMCSyncHeader_2, LMCSyncHeader_3, LMCSyncHeade
 reg [5:0] pipe_width;
 reg [4:0] count= 0;
 
-always@(generation) begin
+  // -------------------------------------------------------------------
+  // BUGFIX-053  (LMC.v - inferred latch on pipe_width, plus an incomplete
+  //              sensitivity list on the block that drives PIPEWIDTH)
+  //
+  // Root cause : `generation` is `input [2:0]`, so 0, 6 and 7 are all
+  //              reachable, but the if/else-if chain only covered 1..5 and
+  //              had NO final else. A combinational block that does not
+  //              assign its output on every path holds the previous value,
+  //              which is a latch: yosys reports `$dlatch` for pipe_width.
+  //              The block was also declared `always@(generation)` while it
+  //              reads pipe_width as well, so the hand-written list was
+  //              incomplete.
+  //
+  // Fix        : add the missing final else and use `always@(*)`. This is
+  //              not an invention - it matches the convention the same author
+  //              already used in the RX-side twin of this logic,
+  //              rtl/DataHandling.v:9 (`always@*`) and :107-111 (final
+  //              `else` with `pipeWidth = 0;`). LMC.v was simply the odd one
+  //              out, which is why only it inferred the latch.
+  //
+  // Why 0 is the safe default here: pipe_width is used in LMC.v ONLY in
+  //              equality comparisons (`pipe_width == 8/16/32 && ...`, from
+  //              line ~551 onward). It is never a divisor, a shift amount or
+  //              an array index - verified by grep - so 0 simply matches none
+  //              of them, the same no-match sentinel DataHandling uses. No
+  //              generation this chain already handles changes behaviour.
+  //
+  // Expected   : PIPEWIDTH is a pure combinational function of `generation`;
+  //              the pipe_width latch disappears from synthesis.
+  // Verification: slang 0 errors; yosys LMC `$dlatch` count 0 after the fix
+  //              (was 1 before) - see docs/RTL_CHANGELOG.md section 5.2.
+  //              QuestaSim: NOT VERIFIED.
+  // -------------------------------------------------------------------
+always@(*) begin
     if(generation==1)
         pipe_width = pipe_width_gen1; 
     else if (generation==2)
@@ -35,13 +68,148 @@ always@(generation) begin
         pipe_width = pipe_width_gen4;                 
     else if (generation==5)
         pipe_width = pipe_width_gen5;
+    else
+        pipe_width = 6'd0;
 
     PIPEWIDTH= pipe_width; 
 end
 
 always @(posedge pclk or negedge reset_n) begin
 
-  if(generation >= 3 && reset_n) begin
+  // -------------------------------------------------------------------
+  // FSM-007  (LMC.v - async reset was not the first, exclusive branch)
+  //
+  // Root cause : this process is declared `always @(posedge pclk or
+  //              negedge reset_n)`, i.e. reset_n is an ASYNC reset edge,
+  //              but the first top-level condition was
+  //                  if (generation >= 3 && reset_n)
+  //              - a non-edge signal (`generation`) ANDed with the edge
+  //              signal - and the real reset action
+  //                  if (~reset_n) begin <all outputs = 0> end
+  //              was a SEPARATE if-chain placed AFTER it (old line 343).
+  //              Synthesis therefore could not recognise any async reset:
+  //              yosys PROC_ARST only inspects the first top-level switch,
+  //              fails to match it against the edge signal, and PROC_DFF
+  //              then aborts with
+  //                  ERROR: Multiple edge sensitive events found for
+  //                         this signal!
+  //              (reproduced in-sandbox on register `data_valid_out_1`,
+  //              process at old LMC.v:42). Commercial synthesis tools hit
+  //              the same construct and either error out or infer a
+  //              latch/clock-gating term from `generation`.
+  //              Same class as FSM-001 in maintlssm.v (forceDetect inside
+  //              the async-reset condition).
+  //
+  // Fix        : make the async reset the FIRST and EXCLUSIVE top-level
+  //              branch and move the non-edge term (`generation >= 3`)
+  //              into a synchronous `else` branch. No assignment was
+  //              added, removed or reordered relative to its own chain:
+  //                * the ~reset_n body is byte-for-byte the old block,
+  //                  hoisted above the functional logic;
+  //                * the functional logic is wrapped in `else begin`,
+  //                  where reset_n is by construction 1, so the old
+  //                  guard `generation >= 3 && reset_n` reduces exactly
+  //                  to `generation >= 3`;
+  //                * the pipe_width/number_of_lanes chain keeps its
+  //                  order, only its head changes from `else if` to
+  //                  `if` (it is now inside the else, no longer
+  //                  chained to the reset test).
+  //              Behaviour is unchanged: the old `generation>=3 && reset_n`
+  //              block and the old `~reset_n` block were already mutually
+  //              exclusive on reset_n, and because these are BLOCKING
+  //              assignments the `data_valid[0]==0` branch still runs
+  //              after the SyncHeader/count block and still overrides
+  //              LMCSyncHeader_1..16 / count with 0 when it matches.
+  //
+  // Expected   : identical simulation behaviour; the process now infers
+  //              plain async-reset flip-flops instead of failing.
+  //
+  // Verification: yosys `read_verilog LMC.v; hierarchy -top LMC; proc;
+  //              opt_clean; check -noinit` goes from
+  //              "ERROR: Multiple edge sensitive events found for this
+  //              signal!" to a clean pass with 0 problems (executed in
+  //              this sandbox, yosys 0.69 yowasp-wasm). slang elaboration
+  //              of rtl/*.v --top PCIe stays at 0 DUT errors.
+  //              QuestaSim re-run: NOT VERIFIED (simulator only exists on
+  //              the user's Windows machine).
+  // -------------------------------------------------------------------
+  if (~reset_n) begin
+    dataout_1=0;
+    dataout_2=0; 
+    dataout_3=0;
+    dataout_4=0; 
+    dataout_5=0;
+    dataout_6=0;
+    dataout_7=0;
+    dataout_8=0;
+    dataout_9=0;
+    dataout_10=0;
+    dataout_11=0;
+    dataout_12=0;
+    dataout_13=0;
+    dataout_14=0;
+    dataout_15=0;
+    dataout_16=0;
+
+    d_k_out_1=0;
+    d_k_out_2=0;
+    d_k_out_3=0;
+    d_k_out_4=0;
+    d_k_out_5=0;
+    d_k_out_6=0;
+    d_k_out_7=0;
+    d_k_out_8=0;
+    d_k_out_9=0;
+    d_k_out_10=0;
+    d_k_out_11=0;
+    d_k_out_12=0;
+    d_k_out_13=0;
+    d_k_out_14=0;
+    d_k_out_15=0;
+    d_k_out_16=0;
+
+    data_valid_out_1=0;
+    data_valid_out_2=0;
+    data_valid_out_3=0;
+    data_valid_out_4=0;
+    data_valid_out_5=0;
+    data_valid_out_6=0;
+    data_valid_out_7=0;
+    data_valid_out_8=0;
+    data_valid_out_9=0;
+    data_valid_out_10=0;
+    data_valid_out_11=0;
+    data_valid_out_12=0;
+    data_valid_out_13=0;
+    data_valid_out_14=0;
+    data_valid_out_15=0;
+    data_valid_out_16=0;
+
+    LMCSyncHeader_1 =0;
+    LMCSyncHeader_2 =0;
+    LMCSyncHeader_3 =0;
+    LMCSyncHeader_4 =0;
+    LMCSyncHeader_5 =0;
+    LMCSyncHeader_6 =0;
+    LMCSyncHeader_7 =0;
+    LMCSyncHeader_8 =0;
+    LMCSyncHeader_9 =0;
+    LMCSyncHeader_10 =0;
+    LMCSyncHeader_11 =0;
+    LMCSyncHeader_12 =0;
+    LMCSyncHeader_13 =0;
+    LMCSyncHeader_14 =0;
+    LMCSyncHeader_15 =0;
+    LMCSyncHeader_16 =0;
+
+    count =0;
+  end
+  else begin
+    // FSM-007: `&& reset_n` removed from this guard - inside the `else`
+    // of `if (~reset_n)` reset_n is 1 by construction, so the condition
+    // is logically identical. Keeping it here is what broke async-reset
+    // inference (see the FSM-007 header above).
+    if(generation >= 3) begin
 
     if(MUXSyncHeader==1 && count==0) begin  // when MUX = 1 --> Ordered Set
         LMCSyncHeader_1 =10;
@@ -338,81 +506,12 @@ always @(posedge pclk or negedge reset_n) begin
         else
             count =0;
 
-  end
+    end
 
-  if (~reset_n) begin
-    dataout_1=0;
-    dataout_2=0; 
-    dataout_3=0;
-    dataout_4=0; 
-    dataout_5=0;
-    dataout_6=0;
-    dataout_7=0;
-    dataout_8=0;
-    dataout_9=0;
-    dataout_10=0;
-    dataout_11=0;
-    dataout_12=0;
-    dataout_13=0;
-    dataout_14=0;
-    dataout_15=0;
-    dataout_16=0;
-
-    d_k_out_1=0;
-    d_k_out_2=0;
-    d_k_out_3=0;
-    d_k_out_4=0;
-    d_k_out_5=0;
-    d_k_out_6=0;
-    d_k_out_7=0;
-    d_k_out_8=0;
-    d_k_out_9=0;
-    d_k_out_10=0;
-    d_k_out_11=0;
-    d_k_out_12=0;
-    d_k_out_13=0;
-    d_k_out_14=0;
-    d_k_out_15=0;
-    d_k_out_16=0;
-
-    data_valid_out_1=0;
-    data_valid_out_2=0;
-    data_valid_out_3=0;
-    data_valid_out_4=0;
-    data_valid_out_5=0;
-    data_valid_out_6=0;
-    data_valid_out_7=0;
-    data_valid_out_8=0;
-    data_valid_out_9=0;
-    data_valid_out_10=0;
-    data_valid_out_11=0;
-    data_valid_out_12=0;
-    data_valid_out_13=0;
-    data_valid_out_14=0;
-    data_valid_out_15=0;
-    data_valid_out_16=0;
-
-    LMCSyncHeader_1 =0;
-    LMCSyncHeader_2 =0;
-    LMCSyncHeader_3 =0;
-    LMCSyncHeader_4 =0;
-    LMCSyncHeader_5 =0;
-    LMCSyncHeader_6 =0;
-    LMCSyncHeader_7 =0;
-    LMCSyncHeader_8 =0;
-    LMCSyncHeader_9 =0;
-    LMCSyncHeader_10 =0;
-    LMCSyncHeader_11 =0;
-    LMCSyncHeader_12 =0;
-    LMCSyncHeader_13 =0;
-    LMCSyncHeader_14 =0;
-    LMCSyncHeader_15 =0;
-    LMCSyncHeader_16 =0;
-
-    count =0;
-  end
-
-  else if (data_valid[0] == 0) begin
+    // FSM-007: head of the pipe_width/number_of_lanes chain was
+    // `else if (data_valid[0] == 0)`; it is now the first `if` of
+    // the synchronous `else` branch (unchanged semantics).
+    if (data_valid[0] == 0) begin
     dataout_1=0;
     dataout_2=0; 
     dataout_3=0;
@@ -2688,6 +2787,7 @@ always @(posedge pclk or negedge reset_n) begin
                 d_k_out_15= {d_k_in[14] , d_k_in[30] , d_k_in[46] , 1'b1};
                 d_k_out_16= {d_k_in[15] , d_k_in[31] , d_k_in[47] , 1'b1};
             end            
+  end
   end
 end
 

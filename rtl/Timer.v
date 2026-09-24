@@ -59,6 +59,54 @@ begin
 			TimerIntervalBase= 32'h00000000;
 		end
 	endcase
+	// ---------------------------------------------------------------------
+	// SIM-015  (Timer.v - OPT-IN simulation-only timer prescale)
+	//
+	// Why this exists : the LTSSM timeouts are modelled at TRUE PCIe scale.
+	//   t12ms is 750000 Pclk cycles (see the comment on the t12ms item above)
+	//   and is then scaled by generation and PIPE width in the second comb
+	//   block. For the pcieTB configuration (GEN1..GEN5_PIPEWIDTH = 8,
+	//   MAX_GEN = 5, LANESNUMBER = 16, `always #5 CLK = ~CLK` => 10 ns period)
+	//   one 12 ms timeout costs:
+	//       Gen1, 8-bit : 750000 << 0 << 2 =  3,000,000 cycles  (~30 ms sim)
+	//       Gen5, 8-bit : 750000 << 4 << 2 = 48,000,000 cycles  (~480 ms sim)
+	//   Detect.Quiet and Detect.Active each use t12ms, Polling uses t24ms, so
+	//   merely leaving Detect needs ~6,000,000 cycles and reaching L0 at Gen5
+	//   needs tens of millions. This is exactly why a short `run` window looks
+	//   like a hung LTSSM: the user's QuestaSim waveform cursor sat at
+	//   ~34.4 us (= ~3,400 cycles) with substateTx/Rx still in DetectActive,
+	//   i.e. three orders of magnitude short of the first timeout. It is a
+	//   run-length problem, not (only) an RTL problem.
+	//
+	// What it does : when the macro SIM_TIMER_PRESCALE is defined, every
+	//   TimerIntervalBase is right-shifted by that amount, so all timeouts are
+	//   divided by 2**SIM_TIMER_PRESCALE. It is applied as the LAST statement
+	//   of this combinational block, after the fully-defaulted case, so it
+	//   scales every interval uniformly and cannot infer a latch.
+	//
+	// Safety : the macro is NOT defined by default. With no define, the
+	//   preprocessor removes these lines entirely and the netlist, the
+	//   simulated behaviour and the waveform are bit-for-bit identical to
+	//   before - so synthesis and normal simulation are unaffected. No port,
+	//   parameter, expression or architecture was changed; this only adds
+	//   lines. `make sim FAST_TIMERS=1` / `+define+SIM_TIMER_PRESCALE=12`
+	//   turns it on for smoke tests (12 => timeouts 4096x shorter, so
+	//   Detect.Quiet is ~732 cycles instead of 3,000,000 and a full
+	//   Detect -> Polling -> Configuration -> L0 sequence becomes observable
+	//   in a few hundred microseconds of simulated time).
+	//
+	// Expected : default build unchanged; with FAST_TIMERS=1 the LTSSM walks
+	//   its states quickly enough to be seen end-to-end in one short run.
+	//
+	// Verification: slang elaboration of rtl/*.v stays at 0 errors with and
+	//   without +define+SIM_TIMER_PRESCALE=12 (executed in sandbox). The
+	//   cycle-count arithmetic above was derived from this file's own
+	//   constants. QuestaSim re-run: NOT VERIFIED (simulator only exists on
+	//   the user's Windows machine).
+	// ---------------------------------------------------------------------
+`ifdef SIM_TIMER_PRESCALE
+	TimerIntervalBase = TimerIntervalBase >> `SIM_TIMER_PRESCALE;
+`endif
 end
 
 //for higher Generation multiply the base value by 2 (shift left)

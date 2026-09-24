@@ -274,7 +274,68 @@ always@(posedge pclk,negedge reset_n) begin
    DataK<=64'b0;
    DataValid<=64'b0;
    end
- if (start) begin 
+
+ // ---------------------------------------------------------------------
+ // BUGFIX-047  (OS_GENERATOR.v - async reset not exclusive with the
+ //              functional branch; synthesis could not infer the reset)
+ //
+ // Root cause : the process is declared
+ //                  always @(posedge pclk, negedge reset_n)
+ //              so reset_n is an ASYNC reset edge, and it does start with
+ //                  if (reset_n == 1'b0) begin <reset values> end
+ //              but the functional logic that followed was a SECOND,
+ //              INDEPENDENT top-level `if`:
+ //                  if (start) begin ... end
+ //                  else if (PIPE==8 && gen3/4/5) begin ... end
+ //                  else begin ... end
+ //              Two sequential top-level switches in one edge-sensitive
+ //              process mean the reset test is not the process's single
+ //              controlling condition, so no async reset can be lifted
+ //              out of it. yosys PROC_ARST therefore leaves both edge
+ //              events in place and PROC_DFF aborts with:
+ //                  ERROR: Multiple edge sensitive events found for
+ //                         this signal!
+ //              (reproduced in-sandbox on register `D`, process at
+ //              OS_GENERATOR.v:267 - `D`/`K` are only ever assigned in the
+ //              `start` branch and never in the reset branch, so they are
+ //              the first registers PROC_DFF trips over).
+ //              Same class as FSM-001 (maintlssm.v) and FSM-007 (LMC.v).
+ //
+ // Functional impact in simulation (why this is a real bug, not just a
+ // synthesis-tool complaint): because the two branches were NOT mutually
+ // exclusive, the functional branch executed *while reset was asserted*
+ // and its non-blocking assignments came LATER in the process, so they
+ // OVERRODE the reset values. Concretely, with reset_n==0 the trailing
+ // `else` branch ("no order sets available to be sent") still ran and
+ // re-drove DataValid / Os_Out / DataK / finish from not_valid, defeating
+ // the reset of the ordered-set generator. finish/busy/valid are the
+ // handshake signals the Tx LTSSM waits on, so a generator that does not
+ // actually reset is a link-training hazard.
+ //
+ // Fix        : chain the functional logic to the reset test by changing
+ //              the standalone `if (start)` into `else if (start)`. This
+ //              makes `if (reset_n == 1'b0)` the first and exclusive
+ //              top-level branch of the process, which is exactly the
+ //              async-reset template synthesis expects. Nothing else was
+ //              touched: the `else if (PIPE==...)` and final `else` arms
+ //              keep their order and content, and no assignment was added,
+ //              removed or moved.
+ //
+ // Expected   : while reset_n==0 ONLY the reset values are registered
+ //              (valid=1, not_valid=0, finish=0, busy=0, Os_Out=0,
+ //              DataK=0, DataValid=0); the ordered-set generation logic
+ //              runs only when reset_n==1, unchanged from before.
+ //
+ // Verification: yosys `read_verilog OS_GENERATOR.v; hierarchy -top
+ //              OS_GENERATOR; proc; opt_clean; check -noinit` goes from
+ //              "ERROR: Multiple edge sensitive events found for this
+ //              signal!" to a clean pass (executed in this sandbox,
+ //              yosys 0.69 yowasp-wasm). slang elaboration of rtl/*.v
+ //              --top PCIe stays at 0 DUT errors.
+ //              QuestaSim re-run: NOT VERIFIED (simulator only exists on
+ //              the user's Windows machine).
+ // ---------------------------------------------------------------------
+ else if (start) begin 
   if(gen==3'b001)  
     PIPE<=GEN1_PIPEWIDTH;
    else if(gen==3'b010)

@@ -1367,12 +1367,36 @@ endtask
   //   end
   // end  
 /******************************* Normal Data Operation *******************************/
+    // -----------------------------------------------------------------
+    // SIM-006  (get_width() - see the full write-up in
+    //          tb/agents/pipe_agent/pipe_driver_bfm.sv).
+    // Root cause : the DUT drives PIPE Width[1:0] from mainLTSSM with the
+    //          encoding documented at rtl/maintlssm.v:432 and implemented at
+    //          maintlssm.v:439-469 as 8->0, 16->1, 32->2 (and width<=0 in
+    //          reset). This decoder used 2'b11 for 32-bit - a value the DUT
+    //          never drives - had no case for the real 2'b10, and no default,
+    //          so lane_width kept its `int` default of 0 and the function
+    //          returned 0 whenever Width was X (time 0) or 2'b10 (Gen3/4/5).
+    // Impact     : a 0 return makes every derived quantity collapse -
+    //          128/get_width() is a DIVISION BY ZERO, and the byte/lane
+    //          packing loops below get a zero step, so the monitor stalls or
+    //          errors out instead of checking the received stream.
+    // Fix        : decode 2'b10 -> 32 (the DUT's real encoding), keep 2'b11
+    //          -> 32 as a harmless tolerant alias, and add default -> 8, which
+    //          matches maintlssm.v's reset value (width<=0 == 8-bit).
+    // Expected   : get_width() always returns 8, 16 or 32 - never 0.
+    // Verification: encoding cross-checked against rtl/maintlssm.v:432,439-469
+    //          (done in sandbox). QuestaSim re-run: NOT VERIFIED (the
+    //          simulator only exists on the user's Windows machine).
+    // -----------------------------------------------------------------
     function int get_width ();
       int lane_width;
       case (Width)
-        2'b00: lane_width = 8;
-        2'b01: lane_width = 16;
-        2'b11: lane_width = 32;
+        2'b00:   lane_width = 8;
+        2'b01:   lane_width = 16;
+        2'b10:   lane_width = 32;  // SIM-006: DUT drives 2'b10 for 32-bit
+        2'b11:   lane_width = 32;  // SIM-006: tolerant alias, never driven
+        default: lane_width = 8;   // SIM-006: never return 0 (reset value)
       endcase
       return lane_width;
     endfunction
@@ -1447,7 +1471,15 @@ endtask
         lanenum = $floor(i/(pipe_max_width/8.0));
         temp_value = TxData[(8*i) +: 8];
         ////`uvm_info("pipe_monitor_bfm", $sformatf("lanenum_tx= %d",lanenum), UVM_MEDIUM)
-        if (((i-(get_width/8)-1)%4) == 0) 
+        // SIM-008 (GitHub issue #78): `get_width` was referenced WITHOUT its
+        // argument parentheses. IEEE 1800 requires parentheses when invoking
+        // a function - slang reports "parentheses are required when invoking
+        // function 'get_width'" - so this is a hard compile error in any
+        // standards-conformant tool and at best tool-specific leniency in
+        // QuestaSim 10.4e. Adding `()` is semantically identical (the function
+        // takes no arguments); all 6 occurrences in this file were fixed
+        // (previously lines 1450, 1479, 1513, 1587, 1613, 1656).
+        if (((i-(get_width()/8)-1)%4) == 0) 
           idle_descrambled[i] = descramble(monitor_tx_scrambler,temp_value,lanenum, current_gen);
         else
         idle_descrambled[i] = 8'b1111_1111;
@@ -1476,7 +1508,7 @@ endtask
         temp_value=TxData[(8*i) +: 8];
          data_descrambled[(8*j) +: 8] = descramble(monitor_tx_scrambler,temp_value,lanenum, current_gen);
        end
-       else if (TxDataK [i] == 1 && ((i-(get_width/8)-1)%4) == 0) begin
+       else if (TxDataK [i] == 1 && ((i-(get_width()/8)-1)%4) == 0) begin
         data_descrambled[(8*j) +: 8] = (TxData[(8*i) +: 8]);
        end
        dllp_done = 0;
@@ -1510,7 +1542,7 @@ endtask
     int j = i - start_tlp;
     if(!(TxDataK[i] == 1 && TxData[(8*i) +: 8] == `END_gen_1_2)) begin
       lanenum = $floor(i/(pipe_max_width/8.0));
-       if(TxDataK [i] == 0 && ((i-(get_width/8)-1)%4) == 0) begin
+       if(TxDataK [i] == 0 && ((i-(get_width()/8)-1)%4) == 0) begin
          temp_value = TxData[(8*i) +: 8];
          data_descrambled[(8*j) +: 8] = descramble(monitor_tx_scrambler, temp_value, lanenum, current_gen);
        end
@@ -1584,7 +1616,7 @@ if (RxDataValid[0] === 1) begin
        //`uvm_info("pipe_monitor_bfm", "momken idle_sent", UVM_MEDIUM)
        lanenum = $floor(i/(pipe_max_width/8.0));
        temp_value = RxData[(8*i) +: 8];
-       if (((i-(get_width/8)-1)%4) == 0) 
+       if (((i-(get_width()/8)-1)%4) == 0) 
          idle_descrambled[i] = descramble(monitor_rx_scrambler,temp_value,lanenum, current_gen);
        else
        idle_descrambled[i] = 8'b1111_1111;
@@ -1610,7 +1642,7 @@ endtask
     int j = i - start_dllp;
     if(!(RxDataK[i] == 1 && RxData[(8*i) +: 8] == `END_gen_1_2)) begin
       lanenum = $floor(i/(pipe_max_width/8.0));
-       if(RxDataK [i] == 0 && ((i-(get_width/8)-1)%4) == 0) begin
+       if(RxDataK [i] == 0 && ((i-(get_width()/8)-1)%4) == 0) begin
         temp_value = RxData[(8*i) +: 8];
         data_descrambled[(8*j) +: 8] = descramble(monitor_rx_scrambler, temp_value, lanenum, current_gen);
        end
@@ -1653,7 +1685,7 @@ endtask
     int j = i - start_tlp;
     if(!(RxDataK[i] == 1 && RxData[(8*i) +: 8] == `END_gen_1_2)) begin
       lanenum = $floor(i/(pipe_max_width/8.0));
-       if(RxDataK [i] == 0 && ((i-(get_width/8)-1)%4) == 0) begin
+       if(RxDataK [i] == 0 && ((i-(get_width()/8)-1)%4) == 0) begin
          temp_value = RxData[(8*i) +: 8];
          data_descrambled[(8*j) +: 8] = descramble(monitor_rx_scrambler, temp_value, lanenum, current_gen);
        end
