@@ -46,3 +46,6 @@ __pycache__/
 *.pyc
 .yowasp/
 /tmp/
+
+# Standalone up/down counter simulation artifacts
+/up_down_counter/sim/build/

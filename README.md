@@ -59,3 +59,11 @@ a design decision - most importantly `rtl/osDecoder.v:181`, whose non-constant
 
 **No QuestaSim result in that document is verified** - the simulator only exists on
 the developer's machine. Everything marked NOT VERIFIED there needs a re-run.
+
+## Standalone up/down counter RTL + UVM example
+
+A separate, self-contained counter design and complete UVM verification
+example is available in [`up_down_counter/`](up_down_counter/README.md).
+It includes directed/random tests, a reference-model scoreboard, functional
+coverage, Questa/ModelSim make/Tcl scripts, and an optional Icarus RTL smoke
+test. It does not change the existing PCIe design or simulation flow.
