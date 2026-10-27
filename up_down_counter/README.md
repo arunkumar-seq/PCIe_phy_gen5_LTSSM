@@ -213,3 +213,45 @@ site's simulator options if needed.
 - **No RTL or UVM simulation was executed here:** Questa/ModelSim and Icarus are
   not installed. Run the commands above in your simulator environment before
   treating the example as simulation-validated or claiming coverage results.
+
+## Reading count direction and per-cycle logs (updated run flow)
+
+For a clearly visible ramp in both directions, choose `counter_directed_test`,
+not `counter_wrap_test`. The wrap test intentionally has isolated increments
+(maximum -> zero) and ends with decrement traffic; it is not a long up/down ramp.
+The directed test starts after reset with 12 UP cycles (1 through 12 at width 8)
+then 6 DOWN cycles (11 through 6). Set count radix to unsigned and Zoom Full.
+For width 8 these ramps are around 45–155 ns and 165–215 ns respectively.
+A smaller width wraps sooner, so it will not display values 1 through 12.
+
+```tcl
+quit -sim
+set GUI_MODE 1
+set TEST counter_directed_test
+set WIDTH 8
+set SEED 1
+do run.do
+```
+
+The root Tcl entry explicitly enables transcript capture and records interface
+signals from time zero. Under `sim/build/`, the updated run creates:
+
+- `counter_directed_test_seed1.log`: compile/run transcript and UVM summary.
+- `counter_directed_test_seed1.wlf`: waveform database (open with Questa).
+- `counter_directed_test_seed1_counter.csv`: cycle-by-cycle counter view (Excel
+  or a text editor). Columns: sample, time_ns, operation, rst_n, clear, load,
+  enable, up, load_value, expected, actual, result. Operations distinguish UP,
+  DOWN, HOLD, LOAD, CLEAR and RESET using the actual winning priority.
+
+The scoreboard summary now includes UP and DOWN cycle counts. CSV output is
+flushed each sample and closed at final phase. Repeating the same test/seed
+replaces the corresponding CSV/WLF run outputs; copy files before rerunning if
+needed. A custom CSV path can be passed as `+COUNTER_CSV=...` when invoking the
+simulator directly (its parent directory must already exist).
+
+The old package only reported scoreboard totals, not a readable counter trace;
+this CSV is a new feature. If your existing installation shows no transcript,
+check the absolute project folder (`pwd` in the Transcript), run the root
+`run.do` rather than manual `run -all`, and check write permissions. The updated
+script prints the selected test and output locations. No Windows/Questa runtime
+validation has been performed in the development sandbox.

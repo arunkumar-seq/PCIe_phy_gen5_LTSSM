@@ -30,6 +30,14 @@ if {![string is integer -strict $WIDTH] || $WIDTH < 2 ||
 set BUILD [file join $PROJECT_ROOT sim build]
 set WORK [file join $BUILD work]
 file mkdir $BUILD
+set RUN_NAME ${TEST}_seed${SEED}
+set TRACE [file join $BUILD ${RUN_NAME}_counter.csv]
+set WAVEFILE [file join $BUILD ${RUN_NAME}.wlf]
+# Explicit transcript selection works when this script is sourced in an open GUI.
+transcript file [file join $BUILD ${RUN_NAME}.log]
+transcript on
+puts "Selected test=$TEST width=$WIDTH seed=$SEED random_items=$NUM_ITEMS"
+puts "Run files: [file join $BUILD $RUN_NAME].log / .wlf / _counter.csv"
 if {[catch {
     if {![file isdirectory $WORK]} {vlib $WORK}
     set args [list -sv -timescale 1ns/1ps -work $WORK +define+UVM_NO_DPI \
@@ -41,16 +49,20 @@ if {[catch {
     vlog {*}$args
     vsim -voptargs=+acc -lib $WORK tb_top -sv_seed $SEED \
         +UVM_TESTNAME=$TEST +NUM_ITEMS=$NUM_ITEMS \
-        -l [file join $BUILD ${TEST}_seed${SEED}.log]
+        "+COUNTER_CSV=$TRACE" -wlf $WAVEFILE
 } message]} {
     puts stderr "BUILD/LOAD FAILED: $message"
     if {!$GUI_MODE} {quit -code 1 -force}
     return
 }
+# Record from time zero, including batch mode, for later waveform debugging.
+log -r /tb_top/vif/*
 if {$GUI_MODE} {
     onfinish stop
-    add wave -r /tb_top/vif/*
+    add wave -radix unsigned /tb_top/vif/count /tb_top/vif/load_value
+    add wave /tb_top/vif/clk /tb_top/vif/rst_n /tb_top/vif/clear /tb_top/vif/load /tb_top/vif/enable /tb_top/vif/up
     run -all
+    wave zoom full
     puts "Simulation stopped. Review the UVM summary and /tb_top/test_passed (1 means PASS)."
 } else {
     do [file join $PROJECT_ROOT sim run.do]

@@ -3,6 +3,7 @@
 onerror {quit -code 1 -force}
 onbreak {quit -code 1 -force}
 onfinish stop
+log -r /tb_top/vif/*
 run -all
 if {[examine -radix unsigned /tb_top/test_passed] != 1} {
     quit -code 1 -force

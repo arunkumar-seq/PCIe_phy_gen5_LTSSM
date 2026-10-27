@@ -27,11 +27,12 @@ compile:
 	@test -d $(BUILD)/work || $(VLIB) $(BUILD)/work
 	$(VLOG) -sv -timescale 1ns/1ps -work $(BUILD)/work +define+UVM_NO_DPI +define+COUNTER_WIDTH=$(WIDTH) +incdir+tb +incdir+$(UVM_HOME)/src $(UVM_HOME)/src/uvm_pkg.sv $(SOURCES)
 run: compile
-	$(VSIM) -c -lib $(BUILD)/work tb_top -sv_seed $(SEED) +UVM_TESTNAME=$(TEST) +NUM_ITEMS=$(NUM_ITEMS) -l $(BUILD)/$(TEST)_seed$(SEED).log -do sim/run.do
+	$(VSIM) -c -lib $(BUILD)/work tb_top -sv_seed $(SEED) +UVM_TESTNAME=$(TEST) +NUM_ITEMS=$(NUM_ITEMS) +COUNTER_CSV=$(BUILD)/$(TEST)_seed$(SEED)_counter.csv -wlf $(BUILD)/$(TEST)_seed$(SEED).wlf -l $(BUILD)/$(TEST)_seed$(SEED).log -do sim/run.do
 regression: compile
 	@set -e; for test in $(TESTS); do \
 	  $(VSIM) -c -lib $(BUILD)/work tb_top -sv_seed $(SEED) \
-	    +UVM_TESTNAME=$$test +NUM_ITEMS=$(NUM_ITEMS) \
+	    +UVM_TESTNAME=$$test +NUM_ITEMS=$(NUM_ITEMS) +COUNTER_CSV=$(BUILD)/$${test}_seed$(SEED)_counter.csv \
+	    -wlf $(BUILD)/$${test}_seed$(SEED).wlf \
 	    -l $(BUILD)/$${test}_seed$(SEED).log -do sim/run.do; \
 	done
 smoke:
