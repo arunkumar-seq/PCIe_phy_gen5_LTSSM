@@ -1,0 +1,3 @@
+
+# Store starter batch scripts normalized; check out with Windows line endings.
+counter_uvm_starter/*.bat text eol=crlf

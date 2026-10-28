@@ -67,3 +67,11 @@ example is available in [`up_down_counter/`](up_down_counter/README.md).
 It includes directed/random tests, a reference-model scoreboard, functional
 coverage, Questa/ModelSim make/Tcl scripts, and an optional Icarus RTL smoke
 test. It does not change the existing PCIe design or simulation flow.
+
+### Directed-only beginner starter
+
+For a smaller first lesson, see
+[`counter_uvm_starter/README.md`](counter_uvm_starter/README.md). It reuses the
+same RTL with one fixed 8-bit scenario: reset, twelve increments, six decrements,
+and hold. It includes the core UVM hierarchy, per-cycle checking/logs and native
+Windows Questa scripts, without random stimulus or coverage.

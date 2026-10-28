@@ -49,3 +49,6 @@ __pycache__/
 
 # Standalone up/down counter simulation artifacts
 /up_down_counter/sim/build/
+
+# Basic directed-only UVM starter generated run outputs
+/counter_uvm_starter/sim/
